@@ -191,8 +191,13 @@ export default function Home() {
 
       {/* Sidebar */}
       <aside className="sidebar">
-        <h2>📋 中華基督教會基慈小學</h2>
-        <p className="subtitle">校務會議紀錄查詢 Powered by Qwen AI</p>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <img src="/logo.png" alt="基慈小學" style={{ width: 48, height: 48 }} />
+          <div>
+            <h2 style={{ margin: 0 }}>中華基督教會基慈小學</h2>
+            <p className="subtitle">校務會議紀錄查詢 Powered by Qwen AI</p>
+          </div>
+        </div>
 
         <hr className="divider" />
 
@@ -243,8 +248,13 @@ export default function Home() {
         {mode === "chat" ? (
           <>
             <div className="header">
-              <h1>📋 校務會議紀錄查詢</h1>
-              <p>根據已上傳的會議紀錄 PDF，使用 AI 回答老師問題</p>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <img src="/logo.png" alt="基慈小學" style={{ width: 40, height: 40 }} />
+                <div>
+                  <h1>校務會議紀錄查詢</h1>
+                  <p>根據已上傳的會議紀錄 PDF，使用 AI 回答老師問題</p>
+                </div>
+              </div>
             </div>
 
             <div className="messages">
