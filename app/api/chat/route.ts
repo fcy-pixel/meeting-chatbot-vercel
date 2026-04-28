@@ -11,7 +11,8 @@ const SYSTEM_PROMPT = `你是一個專業的學校會議紀錄助手。你的任
 2. 如果會議紀錄中沒有相關資訊，請明確告知
 3. 回答時引用具體的會議名稱和日期
 4. 使用繁體中文回答
-5. 回答要以自然段落書寫，不要使用 Markdown 格式（不要用 **粗體**、# 標題、- 列表、> 引用等符號），直接用文字和換行表達重點`;
+5. 回答要以自然段落書寫，不要使用 Markdown 格式（不要用 **粗體**、# 標題、- 列表、> 引用等符號）
+6. 需要強調重點時，在該句或該項前面加上合適的 emoji（例如 📌 表示重點、📅 表示日期、✅ 表示已決議、⚠️ 表示注意事項），不要用星號或其他符號`;
 
 function buildContext(docs: { name: string; modified: string; text: string }[], maxChars = 60000): string {
   const parts: string[] = [];
