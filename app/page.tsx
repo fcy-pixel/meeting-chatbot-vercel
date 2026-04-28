@@ -91,7 +91,8 @@ export default function Home() {
 
     const userMsg: Message = { role: "user", content: input.trim() };
     const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
+    const withPlaceholder: Message[] = [...newMessages, { role: "assistant", content: "" }];
+    setMessages(withPlaceholder);
     setInput("");
     setSending(true);
 
@@ -101,12 +102,21 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: newMessages, docs: docs || [] }),
       });
-      const data = await resp.json();
-      const assistantMsg: Message = {
-        role: "assistant",
-        content: data.answer || data.error || "回覆失敗",
-      };
-      setMessages([...newMessages, assistantMsg]);
+
+      if (!resp.ok || !resp.body) {
+        throw new Error("回覆失敗");
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        fullContent += decoder.decode(value, { stream: true });
+        setMessages([...newMessages, { role: "assistant", content: fullContent }]);
+      }
     } catch {
       setMessages([
         ...newMessages,
@@ -279,18 +289,15 @@ export default function Home() {
               {messages.map((msg, i) => (
                 <div key={i} className={`message ${msg.role}`}>
                   <div className="message-avatar">{msg.role === "user" ? "👤" : "🤖"}</div>
-                  <div className="message-content">{msg.content}</div>
-                </div>
-              ))}
-
-              {sending && (
-                <div className="message assistant">
-                  <div className="message-avatar">🤖</div>
                   <div className="message-content">
-                    思考中<span className="loading-dots"></span>
+                    {msg.role === "assistant" && msg.content === "" ? (
+                      <>思考中<span className="loading-dots"></span></>
+                    ) : (
+                      msg.content
+                    )}
                   </div>
                 </div>
-              )}
+              ))}
 
               <div ref={messagesEndRef} />
             </div>

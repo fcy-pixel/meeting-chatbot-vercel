@@ -11,7 +11,7 @@ const SYSTEM_PROMPT = `你是一個專業的學校會議紀錄助手。你的任
 2. 如果會議紀錄中沒有相關資訊，請明確告知
 3. 回答時引用具體的會議名稱和日期
 4. 使用繁體中文回答
-5. 回答要清晰、有條理`;
+5. 回答要以自然段落書寫，不要使用 Markdown 格式（不要用 **粗體**、# 標題、- 列表、> 引用等符號），直接用文字和換行表達重點`;
 
 function buildContext(docs: { name: string; modified: string; text: string }[], maxChars = 60000): string {
   const parts: string[] = [];
@@ -61,13 +61,31 @@ export async function POST(req: NextRequest) {
 
   const client = new OpenAI({ apiKey, baseURL: QWEN_BASE_URL });
 
-  const response = await client.chat.completions.create({
+  const stream = await client.chat.completions.create({
     model: MODEL_NAME,
     messages: apiMessages,
     temperature: 0.3,
     max_tokens: 2000,
+    stream: true,
   });
 
-  const answer = response.choices[0]?.message?.content || "（無回應）";
-  return NextResponse.json({ answer });
+  const readable = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      for await (const chunk of stream) {
+        const text = chunk.choices[0]?.delta?.content || "";
+        if (text) {
+          controller.enqueue(encoder.encode(text));
+        }
+      }
+      controller.close();
+    },
+  });
+
+  return new Response(readable, {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache",
+    },
+  });
 }
