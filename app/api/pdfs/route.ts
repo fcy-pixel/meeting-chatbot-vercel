@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { extractText, getDocumentProxy } from "unpdf";
 
 export const runtime = "edge";
 
@@ -119,6 +118,7 @@ export async function POST(req: NextRequest) {
 
   const formData = await req.formData();
   const file = formData.get("file") as File | null;
+  const providedText = (formData.get("text") as string | null) ?? "";
   if (!file) {
     return NextResponse.json({ error: "No file" }, { status: 400 });
   }
@@ -140,16 +140,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Upload failed: ${err}` }, { status: 500 });
   }
 
-  // 2) Extract text and upload .txt (best-effort; warn but don't fail upload)
-  let extractedText = "";
-  try {
-    const pdf = await getDocumentProxy(u8);
-    const { text } = await extractText(pdf, { mergePages: true });
-    extractedText = Array.isArray(text) ? text.join("\n") : (text ?? "");
-  } catch (e) {
-    extractedText = `[無法抽取此檔案文字: ${e instanceof Error ? e.message : String(e)}]`;
-  }
-
+  // 2) 客戶端已抽取的文字直接 commit；不在 Edge runtime 解析 PDF（避開 CPU 限制）
+  const extractedText = providedText ?? "";
   const base64Txt = strToBase64(extractedText);
   const putTxt = await githubPutFile(
     txtUrl,
@@ -160,7 +152,7 @@ export async function POST(req: NextRequest) {
   if (!putTxt.ok) {
     const err = await putTxt.text();
     return NextResponse.json(
-      { success: true, name: filename, warning: `文字抽取上傳失敗: ${err}` },
+      { success: true, name: filename, warning: `文字檔上傳失敗: ${err}` },
       { status: 200 }
     );
   }

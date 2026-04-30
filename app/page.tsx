@@ -126,22 +126,46 @@ export default function Home() {
     setSending(false);
   }
 
+  async function extractPdfTextInBrowser(file: File): Promise<string> {
+    // 動態載入 unpdf，避免 SSR / 首屏體積問題
+    const { extractText, getDocumentProxy } = await import("unpdf");
+    const buf = await file.arrayBuffer();
+    const pdf = await getDocumentProxy(new Uint8Array(buf));
+    const { text } = await extractText(pdf, { mergePages: true });
+    return Array.isArray(text) ? text.join("\n") : (text ?? "");
+  }
+
   async function handleUpload() {
     const fileInput = fileInputRef.current;
     if (!fileInput?.files?.length) return;
     setUploading(true);
 
     for (const file of Array.from(fileInput.files)) {
-      const formData = new FormData();
-      formData.append("file", file);
       try {
+        // 1) 先在瀏覽器抽取文字（避免 Cloudflare Workers CPU 限制）
+        let text = "";
+        try {
+          text = await extractPdfTextInBrowser(file);
+        } catch (e) {
+          showToast(
+            `文字抽取失敗，仍會上傳 PDF：${file.name}`,
+            "error"
+          );
+          console.error(e);
+        }
+
+        // 2) 將 PDF + 已抽好的文字一起送上 server
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("text", text);
+
         const resp = await fetch("/api/pdfs", {
           method: "POST",
           headers: { "x-admin-password": adminPwd },
           body: formData,
         });
         if (resp.ok) {
-          showToast(`✅ 已上傳：${file.name}`, "success");
+          showToast(`✅ 已上傳：${file.name}（${text.length} 字）`, "success");
         } else {
           showToast(`上傳失敗：${file.name}`, "error");
         }
