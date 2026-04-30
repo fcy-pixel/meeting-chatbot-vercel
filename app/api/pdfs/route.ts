@@ -34,7 +34,7 @@ export async function GET() {
   }
 
   const url = `https://api.github.com/repos/${repo}/contents/pdfs`;
-  const resp = await fetch(url, { headers: githubHeaders(token), cache: "no-store" });
+  const resp = await fetch(url, { headers: githubHeaders(token) });
 
   if (resp.status === 404) {
     return NextResponse.json({ files: [] });
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
   const headers = githubHeaders(token);
 
   // Check if exists (need sha for update)
-  const existing = await fetch(url, { headers, cache: "no-store" });
+  const existing = await fetch(url, { headers });
   let sha: string | undefined;
   if (existing.ok) {
     const data = await existing.json();
@@ -131,7 +131,7 @@ export async function DELETE(req: NextRequest) {
   const url = `https://api.github.com/repos/${repo}/contents/pdfs/${encodeURIComponent(filename)}`;
   const headers = githubHeaders(token);
 
-  const resp = await fetch(url, { headers, cache: "no-store" });
+  const resp = await fetch(url, { headers });
   if (!resp.ok) {
     return NextResponse.json({ error: "File not found" }, { status: 404 });
   }

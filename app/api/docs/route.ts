@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { extractText, getDocumentProxy } from "unpdf";
 
 export const runtime = "edge";
 
-// Load all PDF texts from GitHub for the chat context
+// Load all pre-extracted PDF texts (pdfs-text/*.txt) from GitHub for the chat context.
+// 文字是在本機透過 `npm run extract` 預先抽取，避免 Cloudflare Workers 在請求中解析 PDF
+// 而觸發 CPU 限制。
 export async function GET() {
   const token = process.env.GITHUB_TOKEN;
   const repo = process.env.GITHUB_REPO;
@@ -11,14 +12,14 @@ export async function GET() {
     return NextResponse.json({ error: "GitHub not configured" }, { status: 500 });
   }
 
-  const url = `https://api.github.com/repos/${repo}/contents/pdfs`;
+  const url = `https://api.github.com/repos/${repo}/contents/pdfs-text`;
   const headers = {
     Authorization: `token ${token}`,
     Accept: "application/vnd.github.v3+json",
     "User-Agent": "meeting-chatbot",
   };
 
-  const resp = await fetch(url, { headers, cache: "no-store" });
+  const resp = await fetch(url, { headers });
   if (resp.status === 404) {
     return NextResponse.json({ docs: [] });
   }
@@ -26,38 +27,35 @@ export async function GET() {
     return NextResponse.json({ error: "Failed to list files" }, { status: 500 });
   }
 
-  const items = await resp.json();
-  const pdfFiles = (Array.isArray(items) ? items : []).filter((f: { name: string }) =>
-    f.name.toLowerCase().endsWith(".pdf")
+  const items = (await resp.json()) as { name: string; download_url: string }[];
+  const txtFiles = (Array.isArray(items) ? items : []).filter((f) =>
+    f.name.toLowerCase().endsWith(".txt")
   );
 
   const docs: { name: string; modified: string; text: string }[] = [];
 
-  for (const f of pdfFiles as { name: string; download_url: string }[]) {
-    try {
-      const dlResp = await fetch(f.download_url, { cache: "no-store" });
-      if (!dlResp.ok) continue;
-      const arrayBuffer = await dlResp.arrayBuffer();
-
-      const pdf = await getDocumentProxy(new Uint8Array(arrayBuffer));
-      const { text } = await extractText(pdf, { mergePages: true });
-      const merged = Array.isArray(text) ? text.join("\n") : text;
-
-      if (merged.trim()) {
+  await Promise.all(
+    txtFiles.map(async (f) => {
+      try {
+        const dlResp = await fetch(f.download_url);
+        if (!dlResp.ok) return;
+        const text = await dlResp.text();
+        if (text.trim()) {
+          docs.push({
+            name: f.name.replace(/\.txt$/i, ".pdf"),
+            modified: "",
+            text,
+          });
+        }
+      } catch (e) {
         docs.push({
           name: f.name,
           modified: "",
-          text: merged,
+          text: `[無法讀取此檔案: ${e instanceof Error ? e.message : String(e)}]`,
         });
       }
-    } catch (e) {
-      docs.push({
-        name: f.name,
-        modified: "",
-        text: `[無法讀取此檔案: ${e instanceof Error ? e.message : String(e)}]`,
-      });
-    }
-  }
+    })
+  );
 
   return NextResponse.json({ docs });
 }
