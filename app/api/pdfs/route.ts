@@ -1,10 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const runtime = "edge";
+
 function githubHeaders(token: string) {
   return {
     Authorization: `token ${token}`,
     Accept: "application/vnd.github.v3+json",
+    "User-Agent": "meeting-chatbot",
   };
+}
+
+// Convert Uint8Array to base64 string (Edge-compatible, no Buffer)
+function toBase64(u8: Uint8Array): string {
+  let s = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < u8.length; i += chunk) {
+    const slice = u8.subarray(i, i + chunk);
+    let part = "";
+    for (let j = 0; j < slice.length; j++) {
+      part += String.fromCharCode(slice[j]);
+    }
+    s += part;
+  }
+  return btoa(s);
 }
 
 // GET: list PDFs from GitHub repo pdfs/ folder
@@ -27,8 +45,12 @@ export async function GET() {
 
   const items = await resp.json();
   const files = (Array.isArray(items) ? items : [])
-    .filter((f: any) => f.name.toLowerCase().endsWith(".pdf"))
-    .map((f: any) => ({ name: f.name, sha: f.sha, download_url: f.download_url }));
+    .filter((f: { name: string }) => f.name.toLowerCase().endsWith(".pdf"))
+    .map((f: { name: string; sha: string; download_url: string }) => ({
+      name: f.name,
+      sha: f.sha,
+      download_url: f.download_url,
+    }));
 
   return NextResponse.json({ files });
 }
@@ -52,11 +74,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No file" }, { status: 400 });
   }
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const base64Content = buffer.toString("base64");
+  const arrayBuffer = await file.arrayBuffer();
+  const base64Content = toBase64(new Uint8Array(arrayBuffer));
   const filename = file.name;
 
-  const url = `https://api.github.com/repos/${repo}/contents/pdfs/${filename}`;
+  const url = `https://api.github.com/repos/${repo}/contents/pdfs/${encodeURIComponent(filename)}`;
   const headers = githubHeaders(token);
 
   // Check if exists (need sha for update)
@@ -67,7 +89,7 @@ export async function POST(req: NextRequest) {
     sha = data.sha;
   }
 
-  const payload: any = {
+  const payload: { message: string; content: string; branch: string; sha?: string } = {
     message: `上傳會議紀錄: ${filename}`,
     content: base64Content,
     branch: "main",
@@ -106,7 +128,7 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: "filename required" }, { status: 400 });
   }
 
-  const url = `https://api.github.com/repos/${repo}/contents/pdfs/${filename}`;
+  const url = `https://api.github.com/repos/${repo}/contents/pdfs/${encodeURIComponent(filename)}`;
   const headers = githubHeaders(token);
 
   const resp = await fetch(url, { headers, cache: "no-store" });
