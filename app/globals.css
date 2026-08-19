@@ -84,6 +84,25 @@ body {
   color: var(--text-light);
 }
 
+.year-picker {
+  display: grid;
+  gap: 6px;
+}
+
+.year-picker p,
+.admin-help {
+  color: var(--text-light);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.sidebar-year-picker {
+  padding: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #eff6ff;
+}
+
 .doc-list-item {
   display: flex;
   justify-content: space-between;
@@ -113,6 +132,29 @@ body {
   font-size: 0.82rem;
   color: var(--text-light);
   margin-top: 2px;
+}
+
+.header-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-right: 170px;
+}
+
+.active-year-badge {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.mobile-year-picker {
+  display: none;
 }
 
 /* Messages area */
@@ -249,7 +291,10 @@ label {
   margin-bottom: 4px;
 }
 
-input[type="text"], input[type="password"], input[type="file"] {
+input[type="text"],
+input[type="password"],
+input[type="file"],
+select {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -257,9 +302,14 @@ input[type="text"], input[type="password"], input[type="file"] {
   font-size: 0.88rem;
   outline: none;
   font-family: inherit;
+  background: var(--card);
+  color: var(--text);
 }
 
-input:focus { border-color: var(--accent); }
+input:focus, select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(49,130,206,0.1);
+}
 
 /* Admin panel */
 .admin-panel {
@@ -284,6 +334,39 @@ input:focus { border-color: var(--accent); }
 .admin-section h3 {
   font-size: 1rem;
   margin-bottom: 12px;
+}
+
+.admin-upload-grid {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.4fr) minmax(280px, 1fr);
+  gap: 16px;
+  align-items: end;
+}
+
+.admin-help {
+  margin-top: 10px;
+}
+
+.file-year-group + .file-year-group {
+  margin-top: 18px;
+}
+
+.file-year-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.uncategorized-note {
+  color: #b45309;
+  font-size: 0.78rem;
+  font-weight: 600;
 }
 
 .file-item {
@@ -336,6 +419,27 @@ input:focus { border-color: var(--accent); }
 /* Responsive */
 @media (max-width: 768px) {
   .app { flex-direction: column; }
-  .sidebar { width: 100%; min-width: 100%; max-height: 40vh; }
+  .sidebar {
+    width: 100%;
+    min-width: 100%;
+    max-height: 34vh;
+    padding: 14px;
+  }
+  .sidebar-year-picker { display: none; }
+  .header-content { padding-right: 0; }
+  .active-year-badge { display: none; }
+  .mobile-year-picker {
+    display: grid;
+    grid-template-columns: auto minmax(180px, 1fr);
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: #eff6ff;
+  }
+  .mobile-year-picker label { margin: 0; color: #1d4ed8; }
+  .admin-upload-grid { grid-template-columns: 1fr; }
+  .file-item { align-items: flex-start; gap: 8px; }
+  .file-item > span:first-child { overflow-wrap: anywhere; }
   .message { max-width: 95%; }
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import { normalizeSchoolYear } from "../../lib/schoolYear";
 
 export const runtime = "edge";
 
@@ -16,13 +17,15 @@ const SYSTEM_PROMPT = `你是一個專業的學校會議紀錄助手。你的任
 5. 回答要以自然段落書寫，不要使用 Markdown 格式（不要用 **粗體**、# 標題、- 列表、> 引用等符號）
 6. 需要強調重點時，在該句或該項前面加上合適的 emoji（例如 📌 表示重點、📅 表示日期、✅ 表示已決議、⚠️ 表示注意事項），不要用星號或其他符號`;
 
-function buildContext(docs: { name: string; modified: string; text: string }[], maxChars = 200000): string {
+type Doc = { name: string; modified: string; text: string; year: string };
+
+function buildContext(docs: Doc[], maxChars = 200000): string {
   const parts: string[] = [];
   let total = 0;
   // 依檔名排序，確保順序穩定（避免每次哪個檔案被截掉不一樣）
   const sorted = [...docs].sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
   for (const doc of sorted) {
-    const header = `===== 檔案：${doc.name}（修改時間：${doc.modified}）=====\n`;
+    const header = `===== 學年：${doc.year}｜檔案：${doc.name} =====\n`;
     const content = doc.text;
     if (total + header.length + content.length > maxChars) {
       const remaining = maxChars - total - header.length;
@@ -44,17 +47,33 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { messages, docs } = body as {
+  const { messages, docs, selectedYear } = body as {
     messages: { role: string; content: string }[];
-    docs: { name: string; modified: string; text: string }[];
+    docs: Doc[];
+    selectedYear: string;
   };
 
   if (!messages || !Array.isArray(messages)) {
     return NextResponse.json({ error: "messages required" }, { status: 400 });
   }
 
-  const context = buildContext(docs || []);
-  const systemMsg = SYSTEM_PROMPT + `\n\n以下是會議紀錄內容：\n\n${context}`;
+  const year = normalizeSchoolYear(selectedYear);
+  if (!year) {
+    return NextResponse.json({ error: "valid selectedYear required" }, { status: 400 });
+  }
+
+  const selectedDocs = (Array.isArray(docs) ? docs : []).filter(
+    (doc) => doc.year === year
+  );
+  if (selectedDocs.length === 0) {
+    return NextResponse.json({ error: "No documents for selected year" }, { status: 400 });
+  }
+
+  const context = buildContext(selectedDocs);
+  const systemMsg =
+    SYSTEM_PROMPT +
+    `\n\n老師目前查詢的學年是 ${year}。只可引用這個學年的資料；如問題涉及其他學年，請提醒老師先切換學年。` +
+    `\n\n以下是 ${year} 學年的會議紀錄內容：\n\n${context}`;
 
   const apiMessages: OpenAI.ChatCompletionMessageParam[] = [
     { role: "system", content: systemMsg },

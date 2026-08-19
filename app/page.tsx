@@ -1,10 +1,23 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import {
+  compareSchoolYearsDesc,
+  currentSchoolYear,
+  schoolYearLabel,
+  suggestedSchoolYears,
+  UNCATEGORIZED_YEAR,
+} from "./lib/schoolYear";
 
 type Message = { role: "user" | "assistant"; content: string };
-type PdfFile = { name: string; sha: string; download_url: string };
-type Doc = { name: string; modified: string; text: string };
+type PdfFile = {
+  name: string;
+  sha: string;
+  download_url: string;
+  path: string;
+  year: string;
+};
+type Doc = { name: string; modified: string; text: string; year: string };
 
 export default function Home() {
   const [mode, setMode] = useState<"chat" | "admin">("chat");
@@ -18,14 +31,53 @@ export default function Home() {
   const [sending, setSending] = useState(false);
   const [docs, setDocs] = useState<Doc[] | null>(null);
   const [docsLoading, setDocsLoading] = useState(false);
+  const [selectedYear, setSelectedYear] = useState(currentSchoolYear());
 
   // Admin state
   const [files, setFiles] = useState<PdfFile[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadYear, setUploadYear] = useState(currentSchoolYear());
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const availableYears = useMemo(
+    () =>
+      Array.from(new Set((docs || []).map((doc) => doc.year)))
+        .filter((year) => year !== UNCATEGORIZED_YEAR)
+        .sort(compareSchoolYearsDesc),
+    [docs]
+  );
+
+  const selectedDocs = useMemo(
+    () => (docs || []).filter((doc) => doc.year === selectedYear),
+    [docs, selectedYear]
+  );
+
+  const adminYearOptions = useMemo(
+    () =>
+      Array.from(new Set([
+        ...suggestedSchoolYears(),
+        ...availableYears,
+        ...files.map((file) => file.year),
+      ]))
+        .filter((year) => year !== UNCATEGORIZED_YEAR)
+        .sort(compareSchoolYearsDesc),
+    [availableYears, files]
+  );
+
+  const filesByYear = useMemo(() => {
+    const grouped = new Map<string, PdfFile[]>();
+    for (const file of files) {
+      const group = grouped.get(file.year) || [];
+      group.push(file);
+      grouped.set(file.year, group);
+    }
+    return Array.from(grouped.entries()).sort(([a], [b]) =>
+      compareSchoolYearsDesc(a, b)
+    );
+  }, [files]);
 
   // Load docs on mount
   useEffect(() => {
@@ -50,7 +102,14 @@ export default function Home() {
     try {
       const resp = await fetch("/api/docs");
       const data = await resp.json();
-      setDocs(data.docs || []);
+      const loadedDocs: Doc[] = data.docs || [];
+      const loadedYears: string[] = (data.years || [])
+        .filter((year: string) => year !== UNCATEGORIZED_YEAR)
+        .sort(compareSchoolYearsDesc);
+      setDocs(loadedDocs);
+      setSelectedYear((current) =>
+        loadedYears.includes(current) ? current : loadedYears[0] || current
+      );
     } catch {
       setDocs([]);
     }
@@ -87,7 +146,7 @@ export default function Home() {
   }
 
   async function handleSend() {
-    if (!input.trim() || sending) return;
+    if (!input.trim() || sending || selectedDocs.length === 0) return;
 
     const userMsg: Message = { role: "user", content: input.trim() };
     const newMessages = [...messages, userMsg];
@@ -100,7 +159,11 @@ export default function Home() {
       const resp = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages, docs: docs || [] }),
+        body: JSON.stringify({
+          messages: newMessages,
+          docs: selectedDocs,
+          selectedYear,
+        }),
       });
 
       if (!resp.ok || !resp.body) {
@@ -158,6 +221,7 @@ export default function Home() {
         const formData = new FormData();
         formData.append("file", file);
         formData.append("text", text);
+        formData.append("year", uploadYear);
 
         const resp = await fetch("/api/pdfs", {
           method: "POST",
@@ -165,7 +229,10 @@ export default function Home() {
           body: formData,
         });
         if (resp.ok) {
-          showToast(`✅ 已上傳：${file.name}（${text.length} 字）`, "success");
+          showToast(
+            `✅ 已上傳至 ${uploadYear} 學年：${file.name}（${text.length} 字）`,
+            "success"
+          );
         } else {
           showToast(`上傳失敗：${file.name}`, "error");
         }
@@ -180,8 +247,8 @@ export default function Home() {
     loadDocs();
   }
 
-  async function handleDelete(filename: string) {
-    if (!confirm(`確定刪除 ${filename}？`)) return;
+  async function handleDelete(file: PdfFile) {
+    if (!confirm(`確定刪除 ${file.year} 學年的 ${file.name}？`)) return;
     try {
       const resp = await fetch("/api/pdfs", {
         method: "DELETE",
@@ -189,10 +256,14 @@ export default function Home() {
           "Content-Type": "application/json",
           "x-admin-password": adminPwd,
         },
-        body: JSON.stringify({ filename }),
+        body: JSON.stringify({
+          filename: file.name,
+          path: file.path,
+          year: file.year,
+        }),
       });
       if (resp.ok) {
-        showToast(`已刪除：${filename}`, "success");
+        showToast(`已刪除：${file.name}`, "success");
         loadFiles();
         loadDocs();
       } else {
@@ -214,6 +285,13 @@ export default function Home() {
   function switchToAdmin() {
     setMode("admin");
     if (adminAuth) loadFiles();
+  }
+
+  function handleYearChange(year: string) {
+    if (year === selectedYear) return;
+    setSelectedYear(year);
+    setMessages([]);
+    setInput("");
   }
 
   return (
@@ -244,6 +322,29 @@ export default function Home() {
           </button>
         </div>
 
+        {mode === "chat" && (
+          <div className="year-picker sidebar-year-picker">
+            <label htmlFor="sidebar-school-year">查詢學年</label>
+            <select
+              id="sidebar-school-year"
+              value={selectedYear}
+              onChange={(event) => handleYearChange(event.target.value)}
+              disabled={availableYears.length === 0}
+            >
+              {availableYears.length === 0 ? (
+                <option value={selectedYear}>暫無學年資料</option>
+              ) : (
+                availableYears.map((year) => (
+                  <option key={year} value={year}>
+                    {schoolYearLabel(year)}
+                  </option>
+                ))
+              )}
+            </select>
+            <p>切換學年會開始新的對話，答案只會引用該學年的紀錄。</p>
+          </div>
+        )}
+
         {mode === "admin" && !adminAuth && (
           <div>
             <label>管理員密碼</label>
@@ -269,9 +370,13 @@ export default function Home() {
 
         {docs && (
           <div className="doc-list">
-            <strong>📄 已載入 {docs.length} 份文件</strong>
-            {docs.map((d) => (
-              <div key={d.name} style={{ padding: "2px 0" }}>• {d.name}</div>
+            <strong>
+              📄 {schoolYearLabel(selectedYear)}：{selectedDocs.length} 份文件
+            </strong>
+            {selectedDocs.map((d) => (
+              <div key={`${d.year}-${d.name}`} style={{ padding: "2px 0" }}>
+                • {d.name}
+              </div>
             ))}
           </div>
         )}
@@ -282,13 +387,38 @@ export default function Home() {
         {mode === "chat" ? (
           <>
             <div className="header">
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <img src="/logo.png" alt="基慈小學" style={{ width: 40, height: 40 }} />
-                <div>
-                  <h1>校務會議紀錄查詢</h1>
-                  <p>根據已上傳的會議紀錄 PDF，使用 AI 回答老師問題</p>
+              <div className="header-content">
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <img src="/logo.png" alt="基慈小學" style={{ width: 40, height: 40 }} />
+                  <div>
+                    <h1>校務會議紀錄查詢</h1>
+                    <p>
+                      目前只查詢 {schoolYearLabel(selectedYear)} 的會議紀錄
+                    </p>
+                  </div>
                 </div>
+                <div className="active-year-badge">📅 {schoolYearLabel(selectedYear)}</div>
               </div>
+            </div>
+
+            <div className="mobile-year-picker">
+              <label htmlFor="mobile-school-year">查詢學年</label>
+              <select
+                id="mobile-school-year"
+                value={selectedYear}
+                onChange={(event) => handleYearChange(event.target.value)}
+                disabled={availableYears.length === 0}
+              >
+                {availableYears.length === 0 ? (
+                  <option value={selectedYear}>暫無學年資料</option>
+                ) : (
+                  availableYears.map((year) => (
+                    <option key={year} value={year}>
+                      {schoolYearLabel(year)}
+                    </option>
+                  ))
+                )}
+              </select>
             </div>
 
             <div className="messages">
@@ -298,15 +428,16 @@ export default function Home() {
                 </div>
               )}
 
-              {!docsLoading && docs && docs.length === 0 && (
+              {!docsLoading && docs && selectedDocs.length === 0 && (
                 <div style={{ textAlign: "center", color: "var(--text-light)", padding: 40 }}>
-                  目前沒有會議紀錄，請管理員上傳 PDF。
+                  {schoolYearLabel(selectedYear)} 目前沒有會議紀錄，請管理員上傳 PDF。
                 </div>
               )}
 
-              {messages.length === 0 && docs && docs.length > 0 && (
+              {messages.length === 0 && selectedDocs.length > 0 && (
                 <div style={{ textAlign: "center", color: "var(--text-light)", padding: 40 }}>
-                  已載入 {docs.length} 份會議紀錄，請輸入問題開始查詢。
+                  已載入 {schoolYearLabel(selectedYear)} 的 {selectedDocs.length} 份會議紀錄，
+                  請輸入問題開始查詢。
                 </div>
               )}
 
@@ -331,10 +462,13 @@ export default function Home() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-                placeholder="請輸入您的問題（例如：上次會議決定了什麼？）"
-                disabled={sending || !docs || docs.length === 0}
+                placeholder={`請輸入關於 ${selectedYear} 學年的問題`}
+                disabled={sending || selectedDocs.length === 0}
               />
-              <button onClick={handleSend} disabled={sending || !input.trim()}>
+              <button
+                onClick={handleSend}
+                disabled={sending || !input.trim() || selectedDocs.length === 0}
+              >
                 {sending ? "發送中..." : "發送"}
               </button>
             </div>
@@ -350,13 +484,37 @@ export default function Home() {
                 <h2>🔧 管理員 — 管理會議紀錄</h2>
 
                 <div className="admin-section">
-                  <h3>📤 上傳 PDF</h3>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".pdf"
-                    multiple
-                  />
+                  <h3>📤 按學年上傳 PDF</h3>
+                  <div className="admin-upload-grid">
+                    <div className="year-picker">
+                      <label htmlFor="upload-school-year">會議紀錄所屬學年</label>
+                      <select
+                        id="upload-school-year"
+                        value={uploadYear}
+                        onChange={(event) => setUploadYear(event.target.value)}
+                      >
+                        {adminYearOptions.map((year) => (
+                          <option key={year} value={year}>
+                            {schoolYearLabel(year)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="meeting-pdf-files">選擇 PDF 檔案</label>
+                      <input
+                        id="meeting-pdf-files"
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".pdf"
+                        multiple
+                      />
+                    </div>
+                  </div>
+                  <p className="admin-help">
+                    上載的 PDF 及抽取文字會一併存入 {schoolYearLabel(uploadYear)}，
+                    老師只會在選擇該學年後看到並查詢這些紀錄。
+                  </p>
                   <button
                     className="btn btn-primary"
                     style={{ marginTop: 10 }}
@@ -372,12 +530,27 @@ export default function Home() {
                   {files.length === 0 ? (
                     <p style={{ color: "var(--text-light)", fontSize: "0.88rem" }}>目前沒有任何 PDF 檔案</p>
                   ) : (
-                    files.map((f) => (
-                      <div key={f.name} className="file-item">
-                        <span>📎 {f.name}</span>
-                        <button className="btn btn-ghost" onClick={() => handleDelete(f.name)}>
-                          🗑️ 刪除
-                        </button>
+                    filesByYear.map(([year, yearFiles]) => (
+                      <div className="file-year-group" key={year}>
+                        <div className="file-year-heading">
+                          <span>📅 {schoolYearLabel(year)}</span>
+                          <span>{yearFiles.length} 份</span>
+                        </div>
+                        {yearFiles.map((file) => (
+                          <div key={file.path} className="file-item">
+                            <span>📎 {file.name}</span>
+                            {file.year === UNCATEGORIZED_YEAR ? (
+                              <span className="uncategorized-note">需先分類</span>
+                            ) : (
+                              <button
+                                className="btn btn-ghost"
+                                onClick={() => handleDelete(file)}
+                              >
+                                🗑️ 刪除
+                              </button>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     ))
                   )}
