@@ -136,19 +136,24 @@
     "question": "本學年的學校旅行地點和旅遊巴公司名稱是甚麼？",
     "status": [
       "not_found",
-      "insufficient"
+      "answered"
     ],
     "mustInclude": [],
     "sources": [],
-    "gold": "2026-2027唯一9月份工作報告未提供學校旅行地點或旅遊巴公司名稱，不套用2025-2026旅行資料。只有訂車前最少兩星期填表的相關規則；可顯示該摘錄並明確拒答地點和公司名稱。"
+    "gold": "2026-2027唯一9月份工作報告未提供學校旅行地點或旅遊巴公司名稱，不套用2025-2026旅行資料。只有訂車前最少兩星期填表的相關規則；可顯示該摘錄並明確拒答地點和公司名稱。",
+    "expectMissing": true
   },
   {
     "id": "no-answer-budget",
     "year": "2026-2027",
     "question": "本學年校務會議通過購買新校巴的預算是多少？",
-    "status": "not_found",
+    "status": [
+      "not_found",
+      "answered"
+    ],
     "mustInclude": [],
     "sources": [],
-    "gold": "文件沒有新校巴採購預算資料，不編造金額或推斷沒有採購。"
+    "gold": "文件沒有新校巴採購預算資料，不編造金額或推斷沒有採購。",
+    "expectMissing": true
   }
 ]

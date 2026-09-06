@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
     answerLength = validateAnswerLength(body.answerLength);
   } catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : "問題格式無效。" }, { status: 400 }); }
   const apiKey = process.env.QWEN_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: "查核服務尚未設定。" }, { status: 503 });
+  if (!apiKey) return NextResponse.json({ error: "問答服務尚未設定。" }, { status: 503 });
   const encoder = new TextEncoder();
   const abort = new AbortController();
   let cancelled = false;
@@ -45,15 +45,15 @@ export async function POST(req: NextRequest) {
         // Historical answers and client documents cannot supply evidence.
         const corpus = selectCorpus(await loadCorpus(year), year, selectedSources);
         const result = await answerQuestion({ question: plan.question, request: question, answerLength, richText: selectedSources !== undefined, year, ...corpus }, call, (scope) => {
-          if (cancelled) throw new Error("查核已取消。");
-          send({ type: "progress", message: scope.synthesis
-            ? `已查閱全部原文；正在分批整理重點 ${scope.synthesis.reviewedBatches} / ${scope.synthesis.totalBatches} 批，再核對答案…`
-            : `已查核 ${scope.reviewedBatches} / ${scope.totalBatches} 批；${scope.failed.length} 批未完成。正在核實原文及答案…` });
+          if (cancelled) throw new Error("回答已取消。");
+          send({ type: "progress", message: scope.totalBatches > 1
+            ? `正在閱讀會議紀錄，已完成 ${scope.reviewedBatches}/${scope.totalBatches} 批…`
+            : "正在閱讀會議紀錄並整理答案…" });
         });
         result.resolvedQuestion = plan.question;
         send({ type: "result", result });
       } catch (e) {
-        send({ type: "error", message: e instanceof Error ? e.message : "查核未完成，請重試。" });
+        send({ type: "error", message: e instanceof Error ? e.message : "連線未完成，請重試。" });
       } finally { clearInterval(heartbeat); if (!cancelled) controller.close(); }
     },
     cancel() { cancelled = true; abort.abort(); },

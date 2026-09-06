@@ -31,7 +31,7 @@ test("only chosen sources reach the model; unselected answers cannot become evid
   const result = await answerQuestion({ question: "活動日期？", year, ...corpus }, async (_system, data: any) => {
     assert.deepEqual(data.sources.map((s: any) => s.name), [chosen.name]);
     assert.ok(!JSON.stringify(data).includes("六月九日"));
-    return { evidence: [] };
+    return { claims: [], notFound: true };
   });
   assert.equal(result.status, "not_found");
   assert.deepEqual(result.scope.selection?.excluded, [other.name]);
@@ -79,7 +79,7 @@ test("chat route applies source choices and rejects cross-year source injection 
     const request = JSON.parse(options?.body || await (url as Request).text());
     const data = JSON.parse(request.messages[1].content);
     assert.deepEqual(data.sources.map((s: any) => s.name), [chosen.name]);
-    return Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: '{"evidence":[]}' } }] });
+    return Response.json({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: '{"claims":[],"notFound":true}' } }] });
   });
   const request = (paths: string[]) => new NextRequest("https://local/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: "活動日期？", selectedYear: year, selectedSources: paths, answerLength: "short", conversation: { year, messages: [] } }) });
   assert.equal((await chat(request(["pdfs/2026-2027/會議.pdf"]))).status, 400);

@@ -10,7 +10,7 @@ export function qwenCall(apiKey: string, signal?: AbortSignal): ModelCall {
       messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(data) }],
     }, { signal });
     const choice = response.choices[0];
-    if (choice?.finish_reason !== "stop" || !choice.message.content) throw new Error(`模型查核未完整完成（${choice?.finish_reason || "empty"}）。`);
+    if (choice?.finish_reason !== "stop" || !choice.message.content) throw new Error(`答案未完整傳回（${choice?.finish_reason || "empty"}）。`);
     return JSON.parse(choice.message.content);
   };
 }

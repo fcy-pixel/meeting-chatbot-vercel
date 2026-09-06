@@ -18,7 +18,7 @@ if (!/^[a-z0-9-]+$/.test(reportName)) throw new Error("Invalid report name");
 let history: ConversationMessage[] = [];
 let year = "2026-2027";
 let selected = [`pdfs/${year}/9月份_主任工作報告_2026.09.01.pdf`];
-type Expected = { words?: string[]; forbidden?: string[]; status?: string[]; table?: boolean; maxChars?: number; pages?: number[]; length?: AnswerLength };
+type Expected = { words?: string[]; forbidden?: string[]; status?: string[]; table?: boolean; maxChars?: number; pages?: number[]; length?: AnswerLength; missing?: boolean };
 
 async function turn(id: string, question: string, expected: Expected) {
   if (process.env.EVAL_CASE && !process.env.EVAL_CASE.split(",").includes(id)) return;
@@ -54,6 +54,7 @@ async function turn(id: string, question: string, expected: Expected) {
     const text = answer.claims.map(c => c.text).join("\n");
     for (const word of expected.words || []) assert.ok(text.includes(word), `Missing ${word}: ${text}`);
     for (const word of expected.forbidden || []) assert.ok(!text.includes(word), `Unsupported addition ${word}: ${text}`);
+    if (expected.missing) assert.match(answer.message + text, /(?:未(?:有)?(?:提及|提供|記載|說明|列出)|沒有(?:找到|提及|提供|記載|說明)|找不到)/, "Must explain which information is missing");
     if (expected.table) {
       const html = renderToStaticMarkup(React.createElement(AnswerView, { answer }));
       const tables = [...html.matchAll(/<table>[\s\S]*?<\/table>/g)].map(m => m[0]).join("\n");
@@ -84,13 +85,13 @@ async function turn(id: string, question: string, expected: Expected) {
   await writeFile(`tests/results/${reportName}.json`, JSON.stringify({ date: new Date().toISOString(), base, rows }, null, 2));
 }
 
-await turn("organized-answer", "請把所選文件中教師與校長面談的安排整理成要點，包含開始日期、準備工作及因公幹改時間的聯絡人。", { words: ["14", "9", "2026", "目標及計劃", "羅副校長"], forbidden: ["存放", "儲存", "上載", "放學後"], pages: [5], length: "detailed" });
-await turn("short-follow-up", "用一段簡短說明，保留剛才三項重點。", { words: ["14", "9", "羅副校長"], forbidden: ["存放", "儲存", "上載", "放學後"], maxChars: 400, pages: [5], length: "short" });
-await turn("table-follow-up", "整理成表格。", { words: ["14", "9", "羅副校長"], forbidden: ["存放", "儲存", "上載", "放學後"], table: true, pages: [5] });
-await turn("unsupported-follow-up", "參加這個面談，每位老师有幾多津貼？", { status: ["not_found", "insufficient"] });
+await turn("organized-answer", "請把所選文件中教師與校長面談的安排整理成要點，包含開始日期、準備工作及因公幹改時間的聯絡人。", { words: ["14", "9", "2026", "目標及計劃", "羅副校長"], forbidden: ["需存放", "需儲存", "須存放", "須儲存", "上載", "放學後"], pages: [5], length: "detailed" });
+await turn("short-follow-up", "用一段簡短說明，保留剛才三項重點。", { words: ["14", "9", "羅副校長"], forbidden: ["需存放", "需儲存", "須存放", "須儲存", "上載", "放學後"], maxChars: 400, pages: [5], length: "short" });
+await turn("table-follow-up", "整理成表格。", { words: ["14", "9", "羅副校長"], forbidden: ["需存放", "需儲存", "須存放", "須儲存", "上載", "放學後"], table: true, pages: [5] });
+await turn("unsupported-follow-up", "參加這個面談，每位老师有幾多津貼？", { status: ["not_found", "answered"], missing: true });
 
 history = []; year = "2025-2026"; selected = [`pdfs/${year}/2月份_主任工作報告_2025.01.27.pdf`];
-await turn("unselected-source-not-used", "第30屆表揚教師計劃，本校提名了哪兩位老師？", { status: ["not_found", "insufficient"] });
+await turn("unselected-source-not-used", "第30屆表揚教師計劃，本校提名了哪兩位老師？", { status: ["not_found", "answered"], missing: true });
 history = []; selected.push(`pdfs/${year}/3月份_主任工作報告_2025.02.26.pdf`);
 await turn("selected-comparison", "用表格比較2月份和3月份工作報告，下學期全體老師交簿冊及核對簿冊數量的日期和時間有何不同？", { words: ["20", "23", "3"], pages: [5, 8], table: true });
 await turn("comparison-follow-up", "用兩句概括變動。", { words: ["20", "23"], maxChars: 350, pages: [5, 8], length: "short" });

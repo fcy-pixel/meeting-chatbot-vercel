@@ -34,7 +34,7 @@ export default function AnswerView({ answer, onCitation }: { answer: Answer; onC
     </div>)}
     <div className="answer-footer">
       <span className={incomplete ? "coverage-label incomplete" : "coverage-label"}>
-        {scope.year} · {scope.documents.length} 份來源／{pageCount} 頁{incomplete ? " · 查閱未完成" : " · 已核對原文"}
+        {scope.year} · {scope.documents.length} 份來源／{pageCount} 頁{incomplete ? " · 查閱未完成" : " · 已參考會議紀錄"}
       </span>
       <button className="text-button" onClick={copy}>複製答案</button>
       {copyState && <span role="status">{copyState}</span>}
@@ -49,15 +49,10 @@ export default function AnswerView({ answer, onCitation }: { answer: Answer; onC
       <summary>查閱範圍 · {scope.reviewedBatches}/{scope.totalBatches} 批{scope.selection?.excluded.length ? ` · ${scope.selection.excluded.length} 份未選` : ""}</summary>
       {answer.resolvedQuestion && <p>本次理解的問題：{answer.resolvedQuestion}</p>}
       <p>頁碼由原 PDF 第一頁起計。以下所選來源的全部文字會分批查閱；未選來源不會用於本次回答。</p>
-      {scope.summary && <p>本次為五項重點摘要：每批完整查閱後選取代表性原文，再跨批綜合。摘要不等於逐項列出所有細節；可繼續追問任何具體事項。</p>}
       {scope.documents.map(d => <p key={d.name}>{d.name}：PDF 第 1–{d.pages} 頁{incomplete ? "（未完成部分見下）" : "（已查閱）"}</p>)}
       {scope.selection && scope.selection.excluded.length > 0 && <p>本次未查閱：{scope.selection.excluded.join("、")}</p>}
       {scope.issues.map(issue => <p className="document-warning" key={issue.name}>{issue.name}（{issue.year}）：{issue.reason}</p>)}
       {scope.failed.map(batch => <div className="document-warning" key={batch.batch}>第 {batch.batch} 批未完成：{batch.sources.map(source => <p key={source}>{source}</p>)}</div>)}
-      {scope.synthesis && <>
-        <p>大量原文分批歸納：{scope.synthesis.reviewedBatches}/{scope.synthesis.totalBatches} 批完成。索引筆記只用於整理草稿，答案引用仍回到原文覆核；全部摘錄均保留。</p>
-        {scope.synthesis.failed.map(batch => <div className="document-warning" key={batch.batch}>第 {batch.batch} 批歸納未完成：{batch.sources.map(source => <p key={source}>{source}</p>)}</div>)}
-      </>}
       <p>文件版本：{scope.snapshot.slice(0, 12)}</p>
     </details>
   </div>;

@@ -25,6 +25,7 @@ for(const fixture of fixtures.filter((f:any) => !process.env.EVAL_CASE || f.id =
   if(!(Array.isArray(fixture.status) ? fixture.status : [fixture.status]).includes(result.status))errors.push(`status ${result.status}, expected ${fixture.status}`);
   for(const word of fixture.mustInclude)if(!text.includes(word))errors.push(`missing answer ${word}`);
   for(const word of fixture.mustNotInclude||[])if(text.includes(word))errors.push(`forbidden ${word}`);
+  if(fixture.expectMissing && !/(?:未(?:有)?(?:提及|提供|記載|說明|列出)|沒有(?:找到|提及|提供|記載|說明)|找不到)/.test(result.message+text))errors.push("missing explicit statement that the requested information is absent");
   const cited=new Set(result.claims.flatMap(c=>c.evidenceIds));
   for(const source of fixture.sources)if(!result.evidence.some(e=>e.name===source.name&&e.page===source.page&&cited.has(e.id)))errors.push(`missing cited source ${source.name} p${source.page}`);
   if(result.evidence.some(e=>e.year!==fixture.year))errors.push("wrong school year");

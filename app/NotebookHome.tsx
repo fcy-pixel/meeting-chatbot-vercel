@@ -354,7 +354,7 @@ export default function Home() {
           <img src="/logo.png" alt="基慈小學" style={{ width: 48, height: 48 }} />
           <div>
             <h2 style={{ margin: 0 }}>中華基督教會基慈小學</h2>
-            <p className="subtitle">校務會議筆記本 · Qwen AI</p>
+            <p className="subtitle">校務會議問答 · Qwen AI</p>
           </div>
         </div>
 
@@ -503,8 +503,8 @@ export default function Home() {
               {messages.length === 0 && yearSources.length > 0 && (
                 <div className="notebook-welcome">
                   <span className="notebook-symbol" aria-hidden="true">✦</span>
-                  <h2>一起讀懂會議紀錄</h2>
-                  <p>讓 AI 整理重點、找出日期，或比較不同會議的安排。可以接著追問，每個重要答案都有來源可查。</p>
+                  <h2>有甚麼想了解？</h2>
+                  <p>直接問會議安排、日期或負責人，也可以請我整理重點、比較不同會議，或繼續追問。</p>
                   <div className="starter-prompts">
                     <button disabled={!activeSources.length || sending} onClick={() => handleSend("請把所選文件整理成五項重要重點，按主題歸納；重要日期、負責人及安排以原文為準，每項附來源。")}>✧ 整理文件重點<span>先掌握主要事項</span></button>
                     <button disabled={!activeSources.length || sending} onClick={() => handleSend("請用表格整理所選文件中有明確日期的重要事項，列出事項和日期；有不同安排時保留差異，每項附來源。")}>▦ 列出重要日期<span>清楚整理活動與期限</span></button>
