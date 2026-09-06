@@ -1,4 +1,11 @@
 import type { Answer } from "./lib/evidence";
+function PdfText({ text }: { text: string }) {
+  return <>{text.split(/([\uf06c\uf0b7\uf0d8])/g).map((part, i) =>
+    /^[\uf06c\uf0b7\uf0d8]$/.test(part)
+      ? <span key={i} className="pdf-list-glyph" data-glyph={part === "\uf0d8" ? "▸" : "•"}>{part}</span>
+      : part
+  )}</>;
+}
 export default function AnswerView({ answer }: { answer: Answer }) {
   const { scope } = answer;
   const pageCount = scope.documents.reduce((n, d) => n + d.pages, 0);
@@ -14,7 +21,7 @@ export default function AnswerView({ answer }: { answer: Answer }) {
         const e = answer.evidence.find((e) => e.id === id);
         return e ? <blockquote key={id} className="source-quote">
           <div className="source-heading">{id} · {e.name} · PDF 第 {e.page} 頁</div>
-          <p>「{e.quote}」</p>
+          <p>「<PdfText text={e.quote} />」</p>
           <a href={`/api/source?path=${encodeURIComponent(e.pdfPath)}&snapshot=${scope.snapshot}#page=${e.page}`} target="_blank" rel="noreferrer">開啟原 PDF 第 {e.page} 頁</a>
         </blockquote> : null;
       })}
@@ -22,7 +29,7 @@ export default function AnswerView({ answer }: { answer: Answer }) {
     {answer.evidence.length > 0 && <details className="scope-details">
       <summary>全部已核實摘錄（{answer.evidence.length}）</summary>
       {answer.evidence.map((e) => <blockquote className="source-quote" key={e.id}>
-        <div className="source-heading">{e.id} · {e.name} · PDF 第 {e.page} 頁</div><p>「{e.quote}」</p>
+        <div className="source-heading">{e.id} · {e.name} · PDF 第 {e.page} 頁</div><p>「<PdfText text={e.quote} />」</p>
         <a href={`/api/source?path=${encodeURIComponent(e.pdfPath)}&snapshot=${scope.snapshot}#page=${e.page}`} target="_blank" rel="noreferrer">開啟原 PDF</a>
       </blockquote>)}
     </details>}

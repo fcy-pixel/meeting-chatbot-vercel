@@ -458,3 +458,7 @@ input:focus, select:focus {
 .scope-details { margin-top: 12px; font-size: .8rem; line-height: 1.65; }
 .scope-details summary { cursor: pointer; color: #4f46e5; padding: 6px 0; }
 .upload-results { font-size: .88rem; line-height: 1.7; overflow-wrap: anywhere; }
+
+/* Render PDF list glyphs without changing the stored excerpt characters. */
+.pdf-list-glyph { font-size: 0; }
+.pdf-list-glyph::before { content: attr(data-glyph); font-size: .85rem; }
