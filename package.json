@@ -12,13 +12,16 @@
     "extract": "tsx scripts/extract-pdfs.mts",
     "test": "tsx --test tests/*.test.ts",
     "test:acceptance": "tsx scripts/evaluate.mts",
-    "test:conversation": "tsx scripts/evaluate-conversation.mts"
+    "test:conversation": "tsx scripts/evaluate-conversation.mts",
+    "test:notebook": "tsx scripts/evaluate-notebook.mts"
   },
   "dependencies": {
     "next": "^15.0.0",
     "openai": "^4.47.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "unpdf": "^0.12.1"
   },
   "devDependencies": {

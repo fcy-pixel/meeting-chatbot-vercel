@@ -4,9 +4,11 @@ import { loadCorpus } from "../../lib/github";
 import { answerQuestion, requestedOtherYear } from "../../lib/evidence";
 import { qwenCall } from "../../lib/qwen";
 import { planConversation, validateConversation, type Conversation } from "../../lib/conversation";
+import { selectCorpus, validateSelectedSources, validateAnswerLength, type AnswerLength } from "../../lib/sourceSelection";
 export const runtime = "edge";
 export async function POST(req: NextRequest) {
   let question: string, year: string, conversation: Conversation, conversationalClient: boolean;
+  let selectedSources: string[] | undefined, answerLength: AnswerLength;
   try {
     const body = await req.json();
     year = normalizeSchoolYear(body.selectedYear);
@@ -16,6 +18,8 @@ export async function POST(req: NextRequest) {
     if (requestedOtherYear(question, year)) throw new Error(`只可查詢 ${year} 學年。請切換學年後重新提問。`);
     conversation = validateConversation(body.conversation, year);
     conversationalClient = body.conversation !== undefined;
+    selectedSources = validateSelectedSources(body.selectedSources, year);
+    answerLength = validateAnswerLength(body.answerLength);
   } catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : "問題格式無效。" }, { status: 400 }); }
   const apiKey = process.env.QWEN_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "查核服務尚未設定。" }, { status: 503 });
@@ -39,10 +43,12 @@ export async function POST(req: NextRequest) {
         send({ type: "progress", message: "正在查閱所選學年的會議紀錄…" });
         // Only the resolved question proceeds to the trusted corpus pipeline.
         // Historical answers and client documents cannot supply evidence.
-        const corpus = await loadCorpus(year);
-        const result = await answerQuestion({ question: plan.question, request: question, year, ...corpus }, call, (scope) => {
+        const corpus = selectCorpus(await loadCorpus(year), year, selectedSources);
+        const result = await answerQuestion({ question: plan.question, request: question, answerLength, richText: selectedSources !== undefined, year, ...corpus }, call, (scope) => {
           if (cancelled) throw new Error("查核已取消。");
-          send({ type: "progress", message: `已查核 ${scope.reviewedBatches} / ${scope.totalBatches} 批；${scope.failed.length} 批未完成。正在核實原文及答案…` });
+          send({ type: "progress", message: scope.synthesis
+            ? `已查閱全部原文；正在分批整理重點 ${scope.synthesis.reviewedBatches} / ${scope.synthesis.totalBatches} 批，再核對答案…`
+            : `已查核 ${scope.reviewedBatches} / ${scope.totalBatches} 批；${scope.failed.length} 批未完成。正在核實原文及答案…` });
         });
         result.resolvedQuestion = plan.question;
         send({ type: "result", result });

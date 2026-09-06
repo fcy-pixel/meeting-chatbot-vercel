@@ -141,10 +141,240 @@ test("relevance prioritization preserves every source and brings requested meeti
   assert.equal(result.length,3);assert.equal(result[2].name,"其他.pdf");
 });
 test("model cannot assert a whole document has no answer from an unrelated excerpt",async()=>{
-  const result=await answerQuestion(input([doc("一般校務內容")]),async(_system,data:any)=>{
-    if(data.sources)return {evidence:[{sourceId:data.sources[0].id,startLine:1,endLine:1}]};
-    if(data.claims)return {supported:true};
-    return {claims:[{text:"3月份報告未提及交簿冊日期",evidenceIds:["E1"]}],insufficient:false};
+  for (const wording of ["未提及", "未標明", "沒有記載"]) {
+    const result=await answerQuestion(input([doc("一般校務內容")]),async(_system,data:any)=>{
+      if(data.sources)return {evidence:[{sourceId:data.sources[0].id,startLine:1,endLine:1}]};
+      if(data.claims)return {supported:true};
+      return {claims:[{text:`3月份報告${wording}交簿冊日期`,evidenceIds:["E1"]}],insufficient:false};
+    });
+    assert.equal(result.status,"insufficient");assert.equal(result.claims.length,0);
+  }
+});
+
+
+test("rejected draft is revised once and independently verified before adoption", async () => {
+  let drafts = 0, reviews = 0;
+  const result = await answerQuestion(input([doc("六月三日截止")]), async (_system, data: any) => {
+    if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 1 }] };
+    if (data.claims) { reviews++; return { supported: reviews === 2, issues: reviews === 1 ? ["原文是六月三日"] : [] }; }
+    drafts++;
+    if (drafts === 2) assert.deepEqual(data.feedback.issues, ["原文是六月三日"]);
+    return { claims: [{ text: drafts === 1 ? "六月四日截止" : "六月三日截止", evidenceIds: ["E1"] }], insufficient: false };
   });
-  assert.equal(result.status,"insufficient");assert.equal(result.claims.length,0);
+  assert.equal(drafts, 2); assert.equal(reviews, 2);
+  assert.equal(result.status, "answered"); assert.equal(result.claims[0].text, "六月三日截止");
+});
+
+test("repeatedly unsupported revisions never leak claims and stop after two drafts", async () => {
+  let drafts = 0, reviews = 0;
+  const result = await answerQuestion(input([doc("六月三日截止")]), async (_system, data: any) => {
+    if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 1 }] };
+    if (data.claims) { reviews++; return { supported: false, issues: ["日期不符"] }; }
+    drafts++; return { claims: [{ text: "六月四日截止", evidenceIds: ["E1"] }], insufficient: false };
+  });
+  assert.equal(drafts, 2); assert.equal(reviews, 2); assert.equal(result.status, "insufficient"); assert.deepEqual(result.claims, []);
+});
+
+
+test("unsupported storage instructions and changed time qualifiers fail even if a model would approve", async () => {
+  for (const text of ["填寫表格，並存放於指定路徑", "翌日放學後補回", "填好表格並上載至路徑"]) {
+    let reviews = 0;
+    const result = await answerQuestion(input([doc("填寫表格（路徑：表格目錄）。可於翌日放學時間補回。")]), async (_system, data: any) => {
+      if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 1 }] };
+      if (data.claims) { reviews++; return { supported: true }; }
+      return { claims: [{ text, evidenceIds: ["E1"] }], insufficient: false };
+    });
+    assert.equal(result.status, "insufficient"); assert.equal(result.claims.length, 0); assert.equal(reviews, 0);
+  }
+});
+
+test("explicit original storage instructions and time qualifiers remain answerable", async () => {
+  const text = "填寫表格後上載及存放於指定路徑，於放學後提交。";
+  const result = await answerQuestion(input([doc(text)]), async (_system, data: any) => {
+    if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 1 }] };
+    if (data.claims) return { supported: true };
+    return { claims: [{ text, evidenceIds: ["E1"] }], insufficient: false };
+  });
+  assert.equal(result.status, "answered");
+});
+
+test("large evidence is fully condensed in batches but final verification and citations use original text", async () => {
+  const documents = Array.from({ length: 18 }, (_, i) => doc(`原文第${i + 1}份：六月三日截止。` + "相關安排。".repeat(1000), `文件${i + 1}.pdf`));
+  const seen = new Set<string>(); let verified = false;
+  const result = await answerQuestion(input(documents), async (_system, data: any) => {
+    if (data.sources) return { evidence: data.sources.map((s: any) => ({ sourceId: s.id, startLine: 1, endLine: s.lines.length })) };
+    if (data.evidenceToCondense) return { notes: data.evidenceToCondense.map((e: any) => { seen.add(e.id); return { id: e.id, note: "六月三日截止。" }; }) };
+    if (data.claims) { verified = true; assert.ok(data.evidence.every((e: any) => e.quote.startsWith("原文"))); assert.ok(data.evidence.every((e: any) => e.quote.length > 4000)); return { supported: true }; }
+    assert.equal(data.evidence, undefined); assert.equal(data.evidenceNotes.length, 18);
+    return { claims: [{ text: "六月三日截止。", evidenceIds: [data.evidenceNotes[17].id] }], insufficient: false };
+  });
+  assert.equal(result.status, "answered"); assert.ok(verified); assert.equal(seen.size, 18); assert.equal(result.evidence.length, 18);
+  assert.equal(result.scope.synthesis?.reviewedBatches, result.scope.synthesis?.totalBatches);
+  assert.ok(result.evidence.every(e => e.quote.endsWith("相關安排。")));
+});
+
+test("missing items in a large-evidence digest are explicit failures and never produce a final answer", async () => {
+  const documents = Array.from({ length: 18 }, (_, i) => doc("原文。".repeat(1800), `文件${i}.pdf`));
+  const result = await answerQuestion(input(documents), async (_system, data: any) => {
+    if (data.sources) return { evidence: data.sources.map((s: any) => ({ sourceId: s.id, startLine: 1, endLine: s.lines.length })) };
+    assert.ok(data.evidenceToCondense); return { notes: [] };
+  });
+  assert.equal(result.status, "insufficient"); assert.equal(result.claims.length, 0); assert.equal(result.evidence.length, 18);
+  assert.ok(result.scope.synthesis!.failed.length > 0); assert.match(result.message, /歸納尚未完整完成/);
+});
+
+test("tentative source dates cannot silently become confirmed dates", async () => {
+  const result = await answerQuestion(input([doc("系統預計於2026年9月1日分階段試用。")]), async (_system, data: any) => {
+    if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 1 }] };
+    if (data.claims) return { supported: true };
+    return { claims: [{ text: "系統自2026年9月1日起分階段試用。", evidenceIds: ["E1"] }], insufficient: false };
+  });
+  assert.equal(result.status, "insufficient"); assert.equal(result.claims.length, 0);
+});
+
+test("UI citation labels are cleaned while source quotations and tentative wording remain intact", async () => {
+  const original = "預計9月1日於E1室試用。";
+  const result = await answerQuestion(input([doc(original)]), async (_system, data: any) => {
+    if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 1 }] };
+    if (data.claims) return { supported: true };
+    return { claims: [{ text: "預計9月1日於E1室試用（E1）。\n\n> 出處：E1", evidenceIds: ["E1"] }], insufficient: false };
+  });
+  assert.equal(result.status, "answered"); assert.equal(result.claims[0].text, "預計9月1日於E1室試用。");
+  assert.equal(result.evidence[0].quote, original);
+});
+
+test("a missing digest item may be repaired only by a complete second pass", async () => {
+  const documents = Array.from({ length: 18 }, (_, i) => doc("六月三日截止。" + "完整原文。".repeat(1000), `文件${i}.pdf`));
+  const tries = new Map<string, number>();
+  const result = await answerQuestion(input(documents), async (_system, data: any) => {
+    if (data.sources) return { evidence: data.sources.map((s: any) => ({ sourceId: s.id, startLine: 1, endLine: s.lines.length })) };
+    if (data.evidenceToCondense) {
+      const id = data.evidenceToCondense[0].id;
+      tries.set(id, (tries.get(id) || 0) + 1);
+      return { notes: tries.get(id) === 1 ? [] : data.evidenceToCondense.map((e: any) => ({ id: e.id, note: "六月三日截止。" })) };
+    }
+    if (data.claims) return { supported: true };
+    return { claims: [{ text: "六月三日截止。", evidenceIds: [data.evidenceNotes[0].id] }], insufficient: false };
+  });
+  assert.equal(result.status, "answered"); assert.ok([...tries.values()].every(n => n === 2));
+  assert.equal(result.scope.synthesis?.reviewedBatches, result.scope.synthesis?.totalBatches); assert.equal(result.evidence.length, 18);
+});
+
+test("five-highlight summaries disclose selection but still review every page and tail", async () => {
+  const documents = [doc("完整原文。".repeat(15000) + "最後一頁的重要事項")];
+  const seen: string[] = [];
+  const result = await answerQuestion({ ...input(documents), question: "請整理成五項重要重點" }, async (system, data: any) => {
+    assert.match(system, /最多五組/);
+    seen.push(...data.sources.map((s: any) => s.lines.map((l: any) => l.text).join("\n")));
+    return { evidence: [] };
+  });
+  assert.equal(result.scope.reviewedBatches, result.scope.totalBatches);
+  assert.ok(seen.some(text => text.includes("最後一頁的重要事項")));
+  assert.equal(result.scope.summary?.topicsPerBatch, 5);
+  const detail = await answerQuestion(input(documents), async (system) => { assert.doesNotMatch(system, /最多五組/); return { evidence: [] }; });
+  assert.equal(detail.scope.summary, undefined);
+});
+
+test("calendar calculations cannot be inserted to resolve conflicting source dates", async () => {
+  const result = await answerQuestion(input([doc("畢業典禮4/7(六)；頒獎在5/7(六)畢業典禮中。")]), async (_system, data: any) => {
+    if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 1 }] };
+    if (data.claims) return { supported: true };
+    return { claims: [{ text: "按實際曆法4/7為六、5/7為日，所以4/7才正確。", evidenceIds: ["E1"] }], insufficient: false };
+  });
+  assert.equal(result.status, "insufficient"); assert.deepEqual(result.claims, []);
+});
+
+test("internal evidence ids in prose do not replace the UI citation controls", async () => {
+  const result = await answerQuestion(input([doc("九月一日截止。")]), async (_system, data: any) => {
+    if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 1 }] };
+    if (data.claims) return { supported: true };
+    return { claims: [{ text: "E1記為九月一日截止。", evidenceIds: ["E1"] }], insufficient: false };
+  });
+  assert.equal(result.status, "answered"); assert.equal(result.claims[0].text, "原文記為九月一日截止。"); assert.deepEqual(result.claims[0].evidenceIds, ["E1"]);
+});
+
+test("date paraphrases preserve day/month order, range endpoints and hyphenated dates", async () => {
+  const original = "報告於5/6/2026前交。活動8-9/1/2026；評估4/6–9/6；結業10-7-2026。";
+  for (const [text, expected] of [
+    ["報告於2026年6月5日前交；活動1月8–9日；評估6月4–9日；結業7月10日。", "answered"],
+    ["報告於2026年5月6日前交。", "insufficient"],
+    ["結業於7月11日。", "insufficient"],
+  ]) {
+    const result = await answerQuestion(input([doc(original)]), async (_system, data: any) => {
+      if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 1 }] };
+      if (data.claims) return { supported: true };
+      return { claims: [{ text, evidenceIds: ["E1"] }], insufficient: false };
+    });
+    assert.equal(result.status, expected, text);
+  }
+});
+
+test("overview topics are reviewed separately and any rejected topic requires a revised answer", async () => {
+  let drafts = 0;
+  const reviewed: string[] = [];
+  const result = await answerQuestion({ ...input([doc("六年級一般不用回校；表演學生須按通告回校。\n各科提交周年報告。")]), question: "整理五項重點" }, async (_system, data: any) => {
+    if (data.sources) return { evidence: [1, 2].map(line => ({ sourceId: data.sources[0].id, startLine: line, endLine: line })) };
+    if (data.claims) {
+      assert.equal(data.claims.length, 1);
+      assert.equal(data.evidence.length, 1);
+      reviewed.push(data.claims[0].text);
+      return { supported: data.claims[0].text !== "所有六年級不用回校", issues: ["不能省略表演學生的例外"] };
+    }
+    drafts++;
+    return { claims: [{ text: drafts === 1 ? "所有六年級不用回校" : "六年級一般不用回校；表演學生按通告回校", evidenceIds: ["E1"] }, { text: "各科提交周年報告", evidenceIds: ["E2"] }], insufficient: false };
+  });
+  assert.equal(drafts, 2); assert.equal(reviewed.length, 4);
+  assert.equal(result.status, "answered");
+  assert.match(result.claims[0].text, /表演學生/);
+});
+
+test("a scheduled activity cannot be reported as completed without confirmation in the source", async () => {
+  for (const [source, draft, expected] of [
+    ["兩位老師將於26/9/2025出席頒獎禮", "兩位老師已出席2025年9月26日頒獎禮", "insufficient"],
+    ["兩位老師已於26/9/2025出席頒獎禮", "兩位老師已出席2025年9月26日頒獎禮", "answered"],
+    ["兩位老師將於26/9/2025出席頒獎禮", "文件安排兩位老師於2025年9月26日出席頒獎禮", "answered"],
+  ]) {
+    const result = await answerQuestion(input([doc(source)]), async (_system, data: any) => {
+      if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 1 }] };
+      if (data.claims) return { supported: true };
+      return { claims: [{ text: draft, evidenceIds: ["E1"] }], insufficient: false };
+    });
+    assert.equal(result.status, expected);
+  }
+});
+
+test("a filename cannot be used to infer an event date even when another excerpt contains that date", async () => {
+  const result = await answerQuestion(input([doc("4/7舉行畢業禮；另一項為5/7。")]), async (_system, data: any) => {
+    if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 1 }] };
+    if (data.claims) return { supported: true };
+    return { claims: [{ text: "配合檔名與上下文可對應至4/7。", evidenceIds: ["E1"] }], insufficient: false };
+  });
+  assert.equal(result.status, "insufficient");
+});
+
+test("a filename year cannot move a March arrangement outside its school year, but explicit historical dates remain valid", async () => {
+  for (const [source, draft, expected] of [
+    ["下學期交簿日期20/3", "2025年3月20日交簿", "insufficient"],
+    ["新學年24/8借用電腦", "2025年8月24日借用電腦", "answered"],
+    ["下學期交簿日期20/3", "20/3交簿", "answered"],
+    ["上年度於20/3/2025交簿", "上年度於2025年3月20日交簿", "answered"],
+    ["敬師日慶典於12/9/2026", "敬師日慶典於2026年9月12日", "answered"],
+  ]) {
+    const result = await answerQuestion(input([doc(source)]), async (_system, data: any) => {
+      if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 1 }] };
+      if (data.claims) return { supported: true };
+      return { claims: [{ text: draft, evidenceIds: ["E1"] }], insufficient: false };
+    });
+    assert.equal(result.status, expected, draft);
+  }
+});
+
+test("an unrelated tentative activity does not make another confirmed date tentative", async () => {
+  const result = await answerQuestion(input([doc("面談14/9開始。\n交流團暫定17/9出發。\n暑期活動組別（暫定）。")]), async (_system, data: any) => {
+    if (data.sources) return { evidence: [{ sourceId: data.sources[0].id, startLine: 1, endLine: 3 }] };
+    if (data.claims) return { supported: true };
+    return { claims: [{ text: "面談於14/9開始。", evidenceIds: ["E1"] }], insufficient: false };
+  });
+  assert.equal(result.status, "answered");
+  assert.equal(result.claims[0].text, "面談於14/9開始。");
 });

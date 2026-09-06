@@ -7,6 +7,7 @@ const docs: MeetingDocument[] = [];
 for (const year of await readdir("pdfs-text")) for (const file of await readdir(`pdfs-text/${year}`)) if(file.endsWith(".json")) docs.push(validateDocument(JSON.parse(await readFile(`pdfs-text/${year}/${file}`, "utf8"))));
 const base = process.env.EVAL_BASE_URL || "https://meeting-chatbot.pages.dev";
 const endpoint = process.argv.includes("--endpoint");
+const notebook = process.argv.includes("--notebook");
 if (!endpoint && !process.env.QWEN_API_KEY) throw new Error("Set QWEN_API_KEY or pass --endpoint.");
 const call = qwenCall(process.env.QWEN_API_KEY || "unused-for-endpoint");
 const rows=[];
@@ -14,7 +15,7 @@ for(const fixture of fixtures.filter((f:any) => !process.env.EVAL_CASE || f.id =
   console.log(`Running ${fixture.id}…`);
   let result: Answer;
   if(endpoint){
-    const response=await fetch(`${base}/api/chat`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({question:fixture.question,selectedYear:fixture.year}),signal:AbortSignal.timeout(240000)});
+    const response=await fetch(`${base}/api/chat`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({question:fixture.question,selectedYear:fixture.year,...(notebook ? {selectedSources:docs.filter(d=>d.year===fixture.year).map(d=>d.pdfPath),answerLength:"standard",conversation:{year:fixture.year,messages:[]}} : {})}),signal:AbortSignal.timeout(240000)});
     const events=(await response.text()).trim().split("\n").map(line=>JSON.parse(line));
     result=events.find(e=>e.type==="result")?.result;
     if(!result)throw Error(`Endpoint failed: ${JSON.stringify(events)}`);
@@ -33,7 +34,7 @@ for(const fixture of fixtures.filter((f:any) => !process.env.EVAL_CASE || f.id =
   rows.push({...fixture,result,errors});
 }
 await mkdir("tests/results",{recursive:true});
-const name=endpoint?"endpoint":"qwen";
-await writeFile(`tests/results/${name}.json`,JSON.stringify({date:new Date().toISOString(),transport:name,rows},null,2));
+const name=endpoint?(notebook?"notebook-standard":"endpoint"):"qwen";
+await writeFile(`tests/results/${name}.json`,JSON.stringify({date:new Date().toISOString(),transport:name,base:endpoint?base:undefined,rows},null,2));
 const failed=rows.filter(r=>r.errors.length);console.log(`${rows.length-failed.length}/${rows.length} passed`);
 if(failed.length)process.exitCode=1;
