@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
-import { answerQuestion, makeBatches, exactQuote, requestedOtherYear, type ModelCall } from "../app/lib/evidence";
+import { answerQuestion, makeBatches, quoteLines, requestedOtherYear, type ModelCall } from "../app/lib/evidence";
 import { validatePages, validateDocument, type MeetingDocument } from "../app/lib/documents";
 import { extractPdf } from "../app/lib/extractPdf";
 import { commitFiles, loadCorpus, readTree, toBase64 } from "../app/lib/github";
@@ -34,10 +34,10 @@ test("over 200k and giant pages are completely covered, including the last docum
   }
   assert.ok(batches.flat().some((s)=>s.text.includes("尾頁答案")));
 });
-test("quotes must match original text exactly apart from whitespace", () => {
-  assert.equal(exactQuote("日期：2026 年\n2 月 2 日", "日期：2026年2月2日"),"日期：2026 年\n2 月 2 日");
-  assert.equal(exactQuote("日期：2026年2月2日", "日期：2025年2月2日"),null);
-  assert.equal(exactQuote("原文一段與另一段", "原文一段…另一段"),null);
+test("excerpts are copied from original lines, including exact private-use bullets", () => {
+  const text="標題\n 日期：2026 年\n2 月 2 日\n尾行";
+  assert.equal(quoteLines(text,2,3)," 日期：2026 年\n2 月 2 日");
+  for(const [start,end] of [[0,1],[1,9],[3,2],[1.5,2]])assert.throws(()=>quoteLines(text,start,end));
 });
 test("explicit other school years are blocked before any model call", async () => {
   assert.equal(requestedOtherYear("2024／2025 學年呢？",year),true);
@@ -59,8 +59,8 @@ test("unreadable legacy document prevents a global no-answer claim", async () =>
   const result=await answerQuestion({...input([doc("資料")]),issues:[{name:"舊檔.pdf",year,reason:"缺頁碼"}]},async()=>({evidence:[]}));
   assert.equal(result.status,"partial");
 });
-test("invented quote or source fails the batch", async () => {
-  for(const evidence of [[{sourceId:"invented",quote:"六月三日"}],[{sourceId:"D1P1S0",quote:"六月四日"}]]) {
+test("invented line range or source fails the batch", async () => {
+  for(const evidence of [[{sourceId:"invented",startLine:1,endLine:1}],[{sourceId:"D1P1S0",startLine:1,endLine:2}]]) {
     const result=await answerQuestion(input([doc("六月三日截止")]),async()=>({evidence}));
     assert.equal(result.status,"partial");assert.equal(result.evidence.length,0);
   }
@@ -68,7 +68,7 @@ test("invented quote or source fails the batch", async () => {
 test("missing citations and failed semantic review withhold claims", async () => {
   for(const invalidCitation of [true,false]){
     const call:ModelCall=async(system,data:any)=>{
-      if(data.sources)return {evidence:[{sourceId:data.sources[0].id,quote:"六月三日截止"}]};
+      if(data.sources)return {evidence:[{sourceId:data.sources[0].id,startLine:1,endLine:1}]};
       if(data.claims)return {supported:false};
       return {claims:[{text:"六月四日截止",evidenceIds:[invalidCitation?"E99":"E1"]}],insufficient:false};
     };
@@ -78,7 +78,7 @@ test("missing citations and failed semantic review withhold claims", async () =>
 });
 test("answer renders only citations resolved to stored filename, year and page", async () => {
   const result=await answerQuestion(input([doc("六月三日截止")]),async(_system,data:any)=>{
-    if(data.sources)return {evidence:[{sourceId:data.sources[0].id,quote:"六月三日截止"}]};
+    if(data.sources)return {evidence:[{sourceId:data.sources[0].id,startLine:1,endLine:1}]};
     if(data.claims)return {supported:true};
     return {claims:[{text:"六月三日截止",evidenceIds:["E1"]}],insufficient:false};
   });
@@ -133,4 +133,18 @@ test("explicit document heading cannot be uploaded into another school year",asy
   const { validateDeclaredYear }=await import("../app/lib/documents");
   assert.throws(()=>validateDeclaredYear("2026-2027年度 9月份校務會議",year),/與所選/);
   assert.doesNotThrow(()=>validateDeclaredYear("2025-2026年度 2月份校務會議",year));
+});
+
+test("relevance prioritization preserves every source and brings requested meeting tables first",()=>{
+  const docs=[doc("一般校務資料","其他.pdf"),doc("全體老師交簿冊日期20/3，核對簿冊數量20/3","2月份.pdf"),doc("全體老師交簿冊日期23/3，核對簿冊數量23/3","3月份.pdf")];
+  const result=makeBatches(docs,14000,"比較2月份和3月份交簿冊及核對簿冊數量日期").flat();
+  assert.equal(result.length,3);assert.equal(result[2].name,"其他.pdf");
+});
+test("model cannot assert a whole document has no answer from an unrelated excerpt",async()=>{
+  const result=await answerQuestion(input([doc("一般校務內容")]),async(_system,data:any)=>{
+    if(data.sources)return {evidence:[{sourceId:data.sources[0].id,startLine:1,endLine:1}]};
+    if(data.claims)return {supported:true};
+    return {claims:[{text:"3月份報告未提及交簿冊日期",evidenceIds:["E1"]}],insufficient:false};
+  });
+  assert.equal(result.status,"insufficient");assert.equal(result.claims.length,0);
 });

@@ -2,7 +2,7 @@ import type { Answer } from "./lib/evidence";
 export default function AnswerView({ answer }: { answer: Answer }) {
   const { scope } = answer;
   const pageCount = scope.documents.reduce((n, d) => n + d.pages, 0);
-  const incomplete = scope.reviewedBatches !== scope.totalBatches || scope.issues.length > 0;
+  const incomplete = answer.status === "partial" || scope.totalBatches === 0 || scope.reviewedBatches !== scope.totalBatches || scope.issues.length > 0;
   return <div className="verified-answer">
     <div className={`scope-badge ${incomplete ? "incomplete" : ""}`}>
       {scope.year} 學年 · {scope.reviewedBatches}/{scope.totalBatches} 批已查核 · {scope.documents.length} 份／{pageCount} 頁{incomplete ? " · 範圍未完整" : ""}

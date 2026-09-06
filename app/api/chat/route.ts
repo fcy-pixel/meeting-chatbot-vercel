@@ -17,21 +17,26 @@ export async function POST(req: NextRequest) {
   const apiKey = process.env.QWEN_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "查核服務尚未設定。" }, { status: 503 });
   const encoder = new TextEncoder();
+  const abort = new AbortController();
+  let cancelled = false;
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (event: unknown) => controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+      const send = (event: unknown) => { if (!cancelled) controller.enqueue(encoder.encode(JSON.stringify(event) + "\n")); };
+      const heartbeat = setInterval(() => send({ type: "heartbeat" }), 15000);
       try {
         send({ type: "progress", message: "正在核對文件庫及學年…" });
         // Ignore client-provided documents and previous assistant messages.
         const corpus = await loadCorpus(year);
-        const result = await answerQuestion({ question, year, ...corpus }, qwenCall(apiKey, req.signal), (scope) => {
+        const result = await answerQuestion({ question, year, ...corpus }, qwenCall(apiKey, AbortSignal.any([req.signal, abort.signal])), (scope) => {
+          if (cancelled) throw new Error("查核已取消。");
           send({ type: "progress", message: `已查核 ${scope.reviewedBatches} / ${scope.totalBatches} 批；${scope.failed.length} 批未完成。正在核實原文及答案…` });
         });
         send({ type: "result", result });
       } catch (e) {
         send({ type: "error", message: e instanceof Error ? e.message : "查核未完成，請重試。" });
-      } finally { controller.close(); }
+      } finally { clearInterval(heartbeat); if (!cancelled) controller.close(); }
     },
+    cancel() { cancelled = true; abort.abort(); },
   });
   return new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
 }

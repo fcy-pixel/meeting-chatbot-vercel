@@ -20,13 +20,14 @@ const legacyCall: ModelCall = async(system, data: any) => {
 };
 const call = legacy ? legacyCall : qwenCall(process.env.QWEN_API_KEY || "unused-for-endpoint");
 const rows=[];
-for(const fixture of fixtures){
+for(const fixture of fixtures.filter((f:any) => !process.env.EVAL_CASE || f.id === process.env.EVAL_CASE)){
   console.log(`Running ${fixture.id}…`);
   let result: Answer;
   if(endpoint || verification){
     const response=await fetch(`${base}/api/${verification ? "verification" : "chat"}`,{method:"POST",headers:{"Content-Type":"application/json",...(verification ? {"x-verification-token":verificationToken}: {})},body:JSON.stringify(verification ? {question:fixture.question,year:fixture.year,docs} : {question:fixture.question,selectedYear:fixture.year}),signal:AbortSignal.timeout(240000)});
     const events=(await response.text()).trim().split("\n").map(line=>JSON.parse(line));
     result=events.find(e=>e.type==="result")?.result;
+    if(verification){await mkdir("tests/results/diagnostics",{recursive:true});await writeFile(`tests/results/diagnostics/${fixture.id}.json`,JSON.stringify(events,null,2));}
     if(!result)throw Error(`Endpoint failed: ${JSON.stringify(events)}`);
   }else result=await answerQuestion({question:fixture.question,year:fixture.year,docs,snapshot:"local-pdf-fixtures"},call);
   const text=result.claims.map(c=>c.text).join("\n");
