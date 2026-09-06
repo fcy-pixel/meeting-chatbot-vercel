@@ -1,115 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
 import { normalizeSchoolYear } from "../../lib/schoolYear";
-
+import { loadCorpus } from "../../lib/github";
+import { answerQuestion, requestedOtherYear } from "../../lib/evidence";
+import { qwenCall } from "../../lib/qwen";
 export const runtime = "edge";
-
-const QWEN_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
-const MODEL_NAME = "qwen-plus";
-
-const SYSTEM_PROMPT = `你是一個專業的學校會議紀錄助手。你的任務是根據提供的會議紀錄 PDF 內容，準確回答老師的問題。
-
-規則：
-1. 只根據提供的會議紀錄內容回答，不要編造資訊
-2. 如果會議紀錄中沒有相關資訊，請明確告知
-3. 回答時引用具體的會議名稱和日期
-4. 使用繁體中文回答
-5. 回答要以自然段落書寫，不要使用 Markdown 格式（不要用 **粗體**、# 標題、- 列表、> 引用等符號）
-6. 需要強調重點時，在該句或該項前面加上合適的 emoji（例如 📌 表示重點、📅 表示日期、✅ 表示已決議、⚠️ 表示注意事項），不要用星號或其他符號`;
-
-type Doc = { name: string; modified: string; text: string; year: string };
-
-function buildContext(docs: Doc[], maxChars = 200000): string {
-  const parts: string[] = [];
-  let total = 0;
-  // 依檔名排序，確保順序穩定（避免每次哪個檔案被截掉不一樣）
-  const sorted = [...docs].sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
-  for (const doc of sorted) {
-    const header = `===== 學年：${doc.year}｜檔案：${doc.name} =====\n`;
-    const content = doc.text;
-    if (total + header.length + content.length > maxChars) {
-      const remaining = maxChars - total - header.length;
-      if (remaining > 200) {
-        parts.push(header + content.slice(0, remaining) + "\n...(截斷)");
-      }
-      break;
-    }
-    parts.push(header + content);
-    total += header.length + content.length;
-  }
-  return parts.join("\n\n");
-}
-
 export async function POST(req: NextRequest) {
+  let question: string, year: string;
+  try {
+    const body = await req.json();
+    year = normalizeSchoolYear(body.selectedYear);
+    question = typeof body.question === "string" ? body.question.trim() : "";
+    if (!year || !question) throw new Error("請選擇有效學年並輸入完整問題。");
+    if (question.length > 4000) throw new Error("問題超過 4,000 字，請縮短問題後重試；文件內容不會截斷。");
+    if (requestedOtherYear(question, year)) throw new Error(`只可查詢 ${year} 學年。請切換學年後重新提問。`);
+  } catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : "問題格式無效。" }, { status: 400 }); }
   const apiKey = process.env.QWEN_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({ error: "QWEN_API_KEY not configured" }, { status: 500 });
-  }
-
-  const body = await req.json();
-  const { messages, docs, selectedYear } = body as {
-    messages: { role: string; content: string }[];
-    docs: Doc[];
-    selectedYear: string;
-  };
-
-  if (!messages || !Array.isArray(messages)) {
-    return NextResponse.json({ error: "messages required" }, { status: 400 });
-  }
-
-  const year = normalizeSchoolYear(selectedYear);
-  if (!year) {
-    return NextResponse.json({ error: "valid selectedYear required" }, { status: 400 });
-  }
-
-  const selectedDocs = (Array.isArray(docs) ? docs : []).filter(
-    (doc) => doc.year === year
-  );
-  if (selectedDocs.length === 0) {
-    return NextResponse.json({ error: "No documents for selected year" }, { status: 400 });
-  }
-
-  const context = buildContext(selectedDocs);
-  const systemMsg =
-    SYSTEM_PROMPT +
-    `\n\n老師目前查詢的學年是 ${year}。只可引用這個學年的資料；如問題涉及其他學年，請提醒老師先切換學年。` +
-    `\n\n以下是 ${year} 學年的會議紀錄內容：\n\n${context}`;
-
-  const apiMessages: OpenAI.ChatCompletionMessageParam[] = [
-    { role: "system", content: systemMsg },
-    ...messages.map((m: { role: string; content: string }) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    })),
-  ];
-
-  const client = new OpenAI({ apiKey, baseURL: QWEN_BASE_URL });
-
-  const stream = await client.chat.completions.create({
-    model: MODEL_NAME,
-    messages: apiMessages,
-    temperature: 0.3,
-    max_tokens: 2000,
-    stream: true,
-  });
-
-  const readable = new ReadableStream({
+  if (!apiKey) return NextResponse.json({ error: "查核服務尚未設定。" }, { status: 503 });
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
     async start(controller) {
-      const encoder = new TextEncoder();
-      for await (const chunk of stream) {
-        const text = chunk.choices[0]?.delta?.content || "";
-        if (text) {
-          controller.enqueue(encoder.encode(text));
-        }
-      }
-      controller.close();
+      const send = (event: unknown) => controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+      try {
+        send({ type: "progress", message: "正在核對文件庫及學年…" });
+        // Ignore client-provided documents and previous assistant messages.
+        const corpus = await loadCorpus(year);
+        const result = await answerQuestion({ question, year, ...corpus }, qwenCall(apiKey, req.signal), (scope) => {
+          send({ type: "progress", message: `已查核 ${scope.reviewedBatches} / ${scope.totalBatches} 批；${scope.failed.length} 批未完成。正在核實原文及答案…` });
+        });
+        send({ type: "result", result });
+      } catch (e) {
+        send({ type: "error", message: e instanceof Error ? e.message : "查核未完成，請重試。" });
+      } finally { controller.close(); }
     },
   });
-
-  return new Response(readable, {
-    headers: {
-      "Content-Type": "text/plain; charset=utf-8",
-      "Cache-Control": "no-cache",
-    },
-  });
+  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
 }

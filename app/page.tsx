@@ -9,7 +9,11 @@ import {
   UNCATEGORIZED_YEAR,
 } from "./lib/schoolYear";
 
-type Message = { role: "user" | "assistant"; content: string };
+import type { DocumentIssue, DocumentSummary } from "./lib/documents";
+import type { Answer } from "./lib/evidence";
+import AnswerView from "./AnswerView";
+
+type Message = { role: "user" | "assistant"; content: string; answer?: Answer };
 type PdfFile = {
   name: string;
   sha: string;
@@ -17,7 +21,7 @@ type PdfFile = {
   path: string;
   year: string;
 };
-type Doc = { name: string; modified: string; text: string; year: string };
+type Doc = DocumentSummary;
 
 export default function Home() {
   const [mode, setMode] = useState<"chat" | "admin">("chat");
@@ -31,6 +35,11 @@ export default function Home() {
   const [sending, setSending] = useState(false);
   const [docs, setDocs] = useState<Doc[] | null>(null);
   const [docsLoading, setDocsLoading] = useState(false);
+  const [docIssues, setDocIssues] = useState<DocumentIssue[]>([]);
+  const [docsError, setDocsError] = useState("");
+  const [uploadResults, setUploadResults] = useState<string[]>([]);
+  const requestRef = useRef<AbortController | null>(null);
+  const generationRef = useRef(0);
   const [selectedYear, setSelectedYear] = useState(currentSchoolYear());
 
   // Admin state
@@ -44,10 +53,10 @@ export default function Home() {
 
   const availableYears = useMemo(
     () =>
-      Array.from(new Set((docs || []).map((doc) => doc.year)))
+      Array.from(new Set([...(docs || []), ...docIssues].map((doc) => doc.year)))
         .filter((year) => year !== UNCATEGORIZED_YEAR)
         .sort(compareSchoolYearsDesc),
-    [docs]
+    [docs, docIssues]
   );
 
   const selectedDocs = useMemo(
@@ -98,10 +107,17 @@ export default function Home() {
   }, [toast]);
 
   async function loadDocs() {
+    requestRef.current?.abort();
+    generationRef.current++;
+    setSending(false);
+    setMessages([]);
+    setDocsError("");
     setDocsLoading(true);
     try {
       const resp = await fetch("/api/docs");
       const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "文件載入失敗");
+      setDocIssues(data.issues || []);
       const loadedDocs: Doc[] = data.docs || [];
       const loadedYears: string[] = (data.years || [])
         .filter((year: string) => year !== UNCATEGORIZED_YEAR)
@@ -110,7 +126,8 @@ export default function Home() {
       setSelectedYear((current) =>
         loadedYears.includes(current) ? current : loadedYears[0] || current
       );
-    } catch {
+    } catch (e) {
+      setDocsError(e instanceof Error ? e.message : "文件載入失敗，請重新載入。");
       setDocs([]);
     }
     setDocsLoading(false);
@@ -146,101 +163,74 @@ export default function Home() {
   }
 
   async function handleSend() {
-    if (!input.trim() || sending || selectedDocs.length === 0) return;
-
-    const userMsg: Message = { role: "user", content: input.trim() };
-    const newMessages = [...messages, userMsg];
-    const withPlaceholder: Message[] = [...newMessages, { role: "assistant", content: "" }];
-    setMessages(withPlaceholder);
+    if (!input.trim() || sending || docsLoading || selectedDocs.length === 0) return;
+    const question = input.trim();
+    const newMessages: Message[] = [...messages, { role: "user", content: question }];
+    setMessages([...newMessages, { role: "assistant", content: "正在查核文件…" }]);
     setInput("");
     setSending(true);
-
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const generation = ++generationRef.current;
+    const update = (message: Message) => {
+      if (generationRef.current === generation) setMessages([...newMessages, message]);
+    };
     try {
       const resp = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: newMessages,
-          docs: selectedDocs,
-          selectedYear,
-        }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, selectedYear }), signal: controller.signal,
       });
-
-      if (!resp.ok || !resp.body) {
-        throw new Error("回覆失敗");
-      }
-
+      if (!resp.ok) { const data = await resp.json(); throw new Error(data.error || "查核失敗"); }
+      if (!resp.body) throw new Error("查核回應中斷");
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
-      let fullContent = "";
-
+      let buffer = "", completed = false;
       while (true) {
         const { done, value } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line);
+          if (event.type === "progress") update({ role: "assistant", content: event.message });
+          if (event.type === "error") throw new Error(event.message);
+          if (event.type === "result") {
+            completed = true;
+            update({ role: "assistant", content: "", answer: event.result });
+          }
+        }
         if (done) break;
-        fullContent += decoder.decode(value, { stream: true });
-        setMessages([...newMessages, { role: "assistant", content: fullContent }]);
       }
-    } catch {
-      setMessages([
-        ...newMessages,
-        { role: "assistant", content: "網絡錯誤，請重試。" },
-      ]);
+      if (!completed) throw new Error("查核回應中斷，尚未得到完整答案，請重試。");
+    } catch (e) {
+      if (!controller.signal.aborted) update({ role: "assistant", content: e instanceof Error ? e.message : "查核未完成，請重試。" });
+    } finally {
+      if (generationRef.current === generation) setSending(false);
     }
-    setSending(false);
-  }
-
-  async function extractPdfTextInBrowser(file: File): Promise<string> {
-    // 動態載入 unpdf，避免 SSR / 首屏體積問題
-    const { extractText, getDocumentProxy } = await import("unpdf");
-    const buf = await file.arrayBuffer();
-    const pdf = await getDocumentProxy(new Uint8Array(buf));
-    const { text } = await extractText(pdf, { mergePages: true });
-    return Array.isArray(text) ? text.join("\n") : (text ?? "");
   }
 
   async function handleUpload() {
     const fileInput = fileInputRef.current;
     if (!fileInput?.files?.length) return;
+    const year = uploadYear;
     setUploading(true);
-
+    setUploadResults([]);
     for (const file of Array.from(fileInput.files)) {
       try {
-        // 1) 先在瀏覽器抽取文字（避免 Cloudflare Workers CPU 限制）
-        let text = "";
-        try {
-          text = await extractPdfTextInBrowser(file);
-        } catch (e) {
-          showToast(
-            `文字抽取失敗，仍會上傳 PDF：${file.name}`,
-            "error"
-          );
-          console.error(e);
-        }
-
-        // 2) 將 PDF + 已抽好的文字一起送上 server
         const formData = new FormData();
         formData.append("file", file);
-        formData.append("text", text);
-        formData.append("year", uploadYear);
-
+        formData.append("year", year);
         const resp = await fetch("/api/pdfs", {
-          method: "POST",
-          headers: { "x-admin-password": adminPwd },
-          body: formData,
+          method: "POST", headers: { "x-admin-password": adminPwd }, body: formData,
         });
-        if (resp.ok) {
-          showToast(
-            `✅ 已上傳至 ${uploadYear} 學年：${file.name}（${text.length} 字）`,
-            "success"
-          );
-        } else {
-          showToast(`上傳失敗：${file.name}`, "error");
-        }
-      } catch {
-        showToast(`上傳失敗：${file.name}`, "error");
+        const data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || "上載未完成");
+        setUploadResults((rows) => [...rows, `✅ ${file.name}：已保存至 ${year} 學年，共 ${data.pages} 頁、${data.chars} 字。`]);
+      } catch (e) {
+        setUploadResults((rows) => [...rows, `❌ ${file.name}：${e instanceof Error ? e.message : "上載未完成，請重試。"}`]);
       }
     }
-
     fileInput.value = "";
     setUploading(false);
     loadFiles();
@@ -289,6 +279,9 @@ export default function Home() {
 
   function handleYearChange(year: string) {
     if (year === selectedYear) return;
+    requestRef.current?.abort();
+    generationRef.current++;
+    setSending(false);
     setSelectedYear(year);
     setMessages([]);
     setInput("");
@@ -375,7 +368,7 @@ export default function Home() {
             </strong>
             {selectedDocs.map((d) => (
               <div key={`${d.year}-${d.name}`} style={{ padding: "2px 0" }}>
-                • {d.name}
+                • {d.name}（{d.totalPages} 頁）
               </div>
             ))}
           </div>
@@ -422,13 +415,18 @@ export default function Home() {
             </div>
 
             <div className="messages">
+              <p className="evidence-note">每次提問會重新查核所選學年全部文件。請列明事項或日期；頁碼指 PDF 實際頁次。答案附原文供核對。</p>
+              {docsError && <p className="document-warning" role="alert">{docsError}</p>}
+              {docIssues.filter((issue) => issue.year === selectedYear || issue.year === UNCATEGORIZED_YEAR).map((issue) => (
+                <p className="document-warning" key={`${issue.year}-${issue.name}`}>未能查閱：{issue.name}（{issue.year}）— {issue.reason}</p>
+              ))}
               {docsLoading && (
                 <div style={{ textAlign: "center", color: "var(--text-light)", padding: 40 }}>
                   正在載入會議紀錄<span className="loading-dots"></span>
                 </div>
               )}
 
-              {!docsLoading && docs && selectedDocs.length === 0 && (
+              {!docsLoading && !docsError && docs && selectedDocs.length === 0 && (
                 <div style={{ textAlign: "center", color: "var(--text-light)", padding: 40 }}>
                   {schoolYearLabel(selectedYear)} 目前沒有會議紀錄，請管理員上傳 PDF。
                 </div>
@@ -445,7 +443,7 @@ export default function Home() {
                 <div key={i} className={`message ${msg.role}`}>
                   <div className="message-avatar">{msg.role === "user" ? "👤" : "🤖"}</div>
                   <div className="message-content">
-                    {msg.role === "assistant" && msg.content === "" ? (
+                    {msg.answer ? <AnswerView answer={msg.answer} /> : msg.role === "assistant" && msg.content === "" ? (
                       <>思考中<span className="loading-dots"></span></>
                     ) : (
                       msg.content
@@ -463,11 +461,11 @@ export default function Home() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
                 placeholder={`請輸入關於 ${selectedYear} 學年的問題`}
-                disabled={sending || selectedDocs.length === 0}
+                disabled={sending || docsLoading || selectedDocs.length === 0}
               />
               <button
                 onClick={handleSend}
-                disabled={sending || !input.trim() || selectedDocs.length === 0}
+                disabled={sending || docsLoading || !input.trim() || selectedDocs.length === 0}
               >
                 {sending ? "發送中..." : "發送"}
               </button>
@@ -491,6 +489,7 @@ export default function Home() {
                       <select
                         id="upload-school-year"
                         value={uploadYear}
+                        disabled={uploading}
                         onChange={(event) => setUploadYear(event.target.value)}
                       >
                         {adminYearOptions.map((year) => (
@@ -508,12 +507,13 @@ export default function Home() {
                         type="file"
                         accept=".pdf"
                         multiple
+                        disabled={uploading}
                       />
                     </div>
                   </div>
                   <p className="admin-help">
                     上載的 PDF 及抽取文字會一併存入 {schoolYearLabel(uploadYear)}，
-                    老師只會在選擇該學年後看到並查詢這些紀錄。
+                    逐頁保存原文和可靠頁次；任何一頁抽不到文字（包括空白頁）便拒絕整份上載，不做 OCR。每份上限 20 MB，超限請先拆分。
                   </p>
                   <button
                     className="btn btn-primary"
@@ -521,9 +521,11 @@ export default function Home() {
                     onClick={handleUpload}
                     disabled={uploading}
                   >
-                    {uploading ? "上傳中..." : "確認上傳"}
+                    {uploading ? "逐頁抽取及保存中..." : "確認上傳"}
                   </button>
                 </div>
+
+                <div className="upload-results" role="status">{uploadResults.map((row, i) => <p key={i}>{row}</p>)}</div>
 
                 <div className="admin-section">
                   <h3>📄 已儲存的檔案（{files.length}）</h3>

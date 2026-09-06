@@ -4,3 +4,7 @@ node_modules/
 .env
 .vercel
 tsconfig.tsbuildinfo
+
+.dev.vars*
+.wrangler/
+tests/results/

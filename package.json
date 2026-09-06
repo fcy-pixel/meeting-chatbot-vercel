@@ -9,22 +9,25 @@
     "pages:build": "npx @cloudflare/next-on-pages",
     "preview": "npm run pages:build && wrangler pages dev .vercel/output/static",
     "deploy": "npm run pages:build && wrangler pages deploy .vercel/output/static",
-    "extract": "node scripts/extract-pdfs.mjs"
+    "extract": "tsx scripts/extract-pdfs.mts",
+    "test": "tsx --test tests/*.test.ts",
+    "test:acceptance": "tsx scripts/evaluate.mts"
   },
   "dependencies": {
     "next": "^15.0.0",
+    "openai": "^4.47.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
-    "openai": "^4.47.0",
     "unpdf": "^0.12.1"
   },
   "devDependencies": {
+    "@cloudflare/next-on-pages": "^1.13.5",
     "@types/node": "^20.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.4.0",
-    "@cloudflare/next-on-pages": "^1.13.5",
-    "wrangler": "^3.78.0",
-    "vercel": "^37.0.0"
+    "vercel": "^37.0.0",
+    "wrangler": "^3.78.0"
   }
 }

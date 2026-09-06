@@ -1,257 +1,54 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  compareSchoolYearsDesc,
-  normalizeSchoolYear,
-  schoolYearFromPath,
-  UNCATEGORIZED_YEAR,
-} from "../../lib/schoolYear";
-
+import { compareSchoolYearsDesc, normalizeSchoolYear, schoolYearFromPath, UNCATEGORIZED_YEAR } from "../../lib/schoolYear";
+import { documentText, validFilename } from "../../lib/documents";
+import { extractPdf } from "../../lib/extractPdf";
+import { commitFiles, readTree } from "../../lib/github";
 export const runtime = "edge";
-
-function githubHeaders(token: string) {
-  return {
-    Authorization: `token ${token}`,
-    Accept: "application/vnd.github.v3+json",
-    "User-Agent": "meeting-chatbot",
-  };
+const encoder = new TextEncoder();
+function authorized(req: NextRequest) {
+  return Boolean(process.env.ADMIN_PASSWORD) && req.headers.get("x-admin-password") === process.env.ADMIN_PASSWORD;
 }
-
-// Convert Uint8Array to base64 string (Edge-compatible, no Buffer)
-function toBase64(u8: Uint8Array): string {
-  let s = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < u8.length; i += chunk) {
-    const slice = u8.subarray(i, i + chunk);
-    let part = "";
-    for (let j = 0; j < slice.length; j++) {
-      part += String.fromCharCode(slice[j]);
-    }
-    s += part;
-  }
-  return btoa(s);
-}
-
-function strToBase64(text: string): string {
-  return toBase64(new TextEncoder().encode(text));
-}
-
-async function githubGetSha(
-  url: string,
-  headers: Record<string, string>
-): Promise<string | undefined> {
-  const r = await fetch(url, { headers });
-  if (!r.ok) return undefined;
-  const data = await r.json();
-  return data.sha as string | undefined;
-}
-
-async function githubPutFile(
-  url: string,
-  headers: Record<string, string>,
-  message: string,
-  base64Content: string
-): Promise<Response> {
-  const sha = await githubGetSha(url, headers);
-  const payload: { message: string; content: string; branch: string; sha?: string } = {
-    message,
-    content: base64Content,
-    branch: "main",
-  };
-  if (sha) payload.sha = sha;
-  return fetch(url, {
-    method: "PUT",
-    headers: { ...headers, "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-}
-
-async function githubDeleteFile(
-  url: string,
-  headers: Record<string, string>,
-  message: string
-): Promise<Response | null> {
-  const sha = await githubGetSha(url, headers);
-  if (!sha) return null;
-  return fetch(url, {
-    method: "DELETE",
-    headers: { ...headers, "Content-Type": "application/json" },
-    body: JSON.stringify({ message, sha, branch: "main" }),
-  });
-}
-
-type GithubItem = {
-  name: string;
-  path: string;
-  type: "file" | "dir";
-  sha: string;
-  download_url: string | null;
-};
-
-function encodeGithubPath(path: string): string {
-  return path.split("/").map(encodeURIComponent).join("/");
-}
-
-async function listFilesRecursively(
-  repo: string,
-  root: string,
-  headers: Record<string, string>
-): Promise<GithubItem[]> {
-  const result: GithubItem[] = [];
-  const pending = [root];
-
-  while (pending.length) {
-    const path = pending.pop()!;
-    const url = `https://api.github.com/repos/${repo}/contents/${encodeGithubPath(path)}`;
-    const resp = await fetch(url, { headers });
-    if (resp.status === 404) continue;
-    if (!resp.ok) throw new Error(`Failed to list ${path}`);
-
-    const items = (await resp.json()) as GithubItem[];
-    for (const item of Array.isArray(items) ? items : []) {
-      if (item.type === "dir") pending.push(item.path);
-      if (item.type === "file") result.push(item);
-    }
-  }
-
-  return result;
-}
-
-// GET: list PDFs from GitHub repo pdfs/ folder
 export async function GET() {
-  const token = process.env.GITHUB_TOKEN;
-  const repo = process.env.GITHUB_REPO;
-  if (!token || !repo) {
-    return NextResponse.json({ error: "GitHub not configured" }, { status: 500 });
-  }
-
-  let items: GithubItem[];
   try {
-    items = await listFilesRecursively(repo, "pdfs", githubHeaders(token));
-  } catch {
-    return NextResponse.json({ error: "Failed to list files" }, { status: 500 });
-  }
-
-  const files = (Array.isArray(items) ? items : [])
-    .filter((f: { name: string }) => f.name.toLowerCase().endsWith(".pdf"))
-    .map((f) => ({
-      name: f.name,
-      sha: f.sha,
-      download_url: f.download_url,
-      path: f.path,
-      year: schoolYearFromPath(f.path, "pdfs") || UNCATEGORIZED_YEAR,
-    }))
-    .sort((a, b) =>
-      compareSchoolYearsDesc(a.year, b.year) || a.name.localeCompare(b.name, "zh-Hant")
-    );
-
-  return NextResponse.json({ files });
+    const { entries } = await readTree();
+    const files = entries.filter((f) => f.type === "blob" && f.path.startsWith("pdfs/") && /\.pdf$/i.test(f.path))
+      .map((f) => ({ name: f.path.split("/").pop(), path: f.path, sha: f.sha, year: schoolYearFromPath(f.path, "pdfs") || UNCATEGORIZED_YEAR }))
+      .sort((a, b) => compareSchoolYearsDesc(a.year, b.year) || a.name.localeCompare(b.name, "zh-Hant"));
+    return NextResponse.json({ files }, { headers: { "Cache-Control": "no-store" } });
+  } catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : "文件載入失敗。" }, { status: 503 }); }
 }
-
-// POST: upload PDF to GitHub, extract text, and commit .txt alongside
 export async function POST(req: NextRequest) {
-  const password = req.headers.get("x-admin-password");
-  if (password !== process.env.ADMIN_PASSWORD) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!authorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  let document, bytes;
+  try {
+    const form = await req.formData();
+    const file = form.get("file");
+    const year = normalizeSchoolYear(form.get("year"));
+    if (!(file instanceof File) || !validFilename(file.name) || !year) throw new Error("請提供 PDF 及有效學年。");
+    bytes = new Uint8Array(await file.arrayBuffer());
+    // Validate the actual PDF on the server before any repository write.
+    document = await extractPdf(bytes, file.name, year);
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : "PDF 抽取失敗，未上載；不會進行 OCR。" }, { status: 422 });
   }
-
-  const token = process.env.GITHUB_TOKEN;
-  const repo = process.env.GITHUB_REPO;
-  if (!token || !repo) {
-    return NextResponse.json({ error: "GitHub not configured" }, { status: 500 });
-  }
-
-  const formData = await req.formData();
-  const file = formData.get("file") as File | null;
-  const providedText = (formData.get("text") as string | null) ?? "";
-  const year = normalizeSchoolYear(formData.get("year"));
-  if (!file) {
-    return NextResponse.json({ error: "No file" }, { status: 400 });
-  }
-  if (!year) {
-    return NextResponse.json({ error: "Valid school year required" }, { status: 400 });
-  }
-
-  const arrayBuffer = await file.arrayBuffer();
-  const u8 = new Uint8Array(arrayBuffer);
-  const base64Pdf = toBase64(u8);
-  const filename = file.name;
-  const baseName = filename.replace(/\.pdf$/i, "");
-
-  const headers = githubHeaders(token);
-  const pdfPath = `pdfs/${year}/${filename}`;
-  const txtPath = `pdfs-text/${year}/${baseName}.txt`;
-  const pdfUrl = `https://api.github.com/repos/${repo}/contents/${encodeGithubPath(pdfPath)}`;
-  const txtUrl = `https://api.github.com/repos/${repo}/contents/${encodeGithubPath(txtPath)}`;
-
-  // 1) Upload PDF
-  const putPdf = await githubPutFile(pdfUrl, headers, `上傳會議紀錄: ${filename}`, base64Pdf);
-  if (!putPdf.ok) {
-    const err = await putPdf.text();
-    return NextResponse.json({ error: `Upload failed: ${err}` }, { status: 500 });
-  }
-
-  // 2) 客戶端已抽取的文字直接 commit；不在 Edge runtime 解析 PDF（避開 CPU 限制）
-  const extractedText = providedText ?? "";
-  const base64Txt = strToBase64(extractedText);
-  const putTxt = await githubPutFile(
-    txtUrl,
-    headers,
-    `抽取會議紀錄文字: ${baseName}.txt`,
-    base64Txt
-  );
-  if (!putTxt.ok) {
-    const err = await putTxt.text();
-    return NextResponse.json(
-      { success: true, name: filename, warning: `文字檔上傳失敗: ${err}` },
-      { status: 200 }
-    );
-  }
-
-  return NextResponse.json({
-    success: true,
-    name: filename,
-    chars: extractedText.length,
-  });
+  try {
+    const base = `pdfs-text/${document.year}/${document.name.replace(/\.pdf$/i, "")}`;
+    const snapshot = await commitFiles([
+      { path: document.pdfPath, bytes },
+      { path: `${base}.txt`, bytes: encoder.encode(documentText(document)) },
+      { path: `${base}.json`, bytes: encoder.encode(JSON.stringify(document)) },
+    ], `保存完整會議紀錄及逐頁文字: ${document.name}`);
+    return NextResponse.json({ success: true, name: document.name, chars: document.pages.reduce((n, p) => n + p.text.length, 0), pages: document.totalPages, snapshot });
+  } catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : "上載未完成，請重試。" }, { status: 503 }); }
 }
-
-// DELETE: delete PDF and its .txt from GitHub
 export async function DELETE(req: NextRequest) {
-  const password = req.headers.get("x-admin-password");
-  if (password !== process.env.ADMIN_PASSWORD) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const token = process.env.GITHUB_TOKEN;
-  const repo = process.env.GITHUB_REPO;
-  if (!token || !repo) {
-    return NextResponse.json({ error: "GitHub not configured" }, { status: 500 });
-  }
-
-  const { filename, path, year: rawYear } = await req.json();
-  const year = normalizeSchoolYear(rawYear);
-  if (!filename || !path || !year) {
-    return NextResponse.json({ error: "filename, path and valid year required" }, { status: 400 });
-  }
-  const expectedPath = `pdfs/${year}/${filename}`;
-  if (path !== expectedPath) {
-    return NextResponse.json({ error: "Invalid file path" }, { status: 400 });
-  }
-  const baseName = filename.replace(/\.pdf$/i, "");
-
-  const headers = githubHeaders(token);
-  const pdfUrl = `https://api.github.com/repos/${repo}/contents/${encodeGithubPath(path)}`;
-  const txtUrl = `https://api.github.com/repos/${repo}/contents/${encodeGithubPath(`pdfs-text/${year}/${baseName}.txt`)}`;
-
-  const delPdf = await githubDeleteFile(pdfUrl, headers, `刪除會議紀錄: ${filename}`);
-  if (!delPdf) {
-    return NextResponse.json({ error: "File not found" }, { status: 404 });
-  }
-  if (!delPdf.ok) {
-    return NextResponse.json({ error: "Delete failed" }, { status: 500 });
-  }
-
-  // Best-effort: delete .txt if exists
-  await githubDeleteFile(txtUrl, headers, `刪除會議紀錄文字: ${baseName}.txt`);
-
-  return NextResponse.json({ success: true });
+  if (!authorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try {
+    const { filename, path, year: rawYear } = await req.json();
+    const year = normalizeSchoolYear(rawYear);
+    if (!validFilename(filename) || !year || path !== `pdfs/${year}/${filename}`) return NextResponse.json({ error: "檔案路徑無效。" }, { status: 400 });
+    const base = `pdfs-text/${year}/${filename.replace(/\.pdf$/i, "")}`;
+    await commitFiles([path, `${base}.txt`, `${base}.json`].map((path) => ({ path, bytes: null })), `刪除會議紀錄及逐頁文字: ${filename}`);
+    return NextResponse.json({ success: true });
+  } catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : "刪除未完成。" }, { status: 503 }); }
 }
