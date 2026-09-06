@@ -12,8 +12,9 @@ import {
 import type { DocumentIssue, DocumentSummary } from "./lib/documents";
 import type { Answer } from "./lib/evidence";
 import AnswerView from "./AnswerView";
+import { answerContext, validateConversation } from "./lib/conversation";
 
-type Message = { role: "user" | "assistant"; content: string; answer?: Answer };
+type Message = { role: "user" | "assistant"; content: string; answer?: Answer; excludeFromContext?: boolean };
 type PdfFile = {
   name: string;
   sha: string;
@@ -165,8 +166,18 @@ export default function Home() {
   async function handleSend() {
     if (!input.trim() || sending || docsLoading || selectedDocs.length === 0) return;
     const question = input.trim();
+    let conversation;
+    try {
+      conversation = validateConversation({ year: selectedYear, messages: messages.filter((message) => !message.excludeFromContext).map((message) => ({
+        role: message.role, content: message.answer ? answerContext(message.answer) : message.content,
+      })) }, selectedYear);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "對話格式無效。", "error");
+      setMessages([...messages, { role: "assistant", content: e instanceof Error ? e.message : "對話格式無效。", excludeFromContext: true }]);
+      return;
+    }
     const newMessages: Message[] = [...messages, { role: "user", content: question }];
-    setMessages([...newMessages, { role: "assistant", content: "正在查核文件…" }]);
+    setMessages([...newMessages, { role: "assistant", content: "正在思考…" }]);
     setInput("");
     setSending(true);
     const controller = new AbortController();
@@ -178,7 +189,7 @@ export default function Home() {
     try {
       const resp = await fetch("/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, selectedYear }), signal: controller.signal,
+        body: JSON.stringify({ question, selectedYear, conversation }), signal: controller.signal,
       });
       if (!resp.ok) { const data = await resp.json(); throw new Error(data.error || "查核失敗"); }
       if (!resp.body) throw new Error("查核回應中斷");
@@ -195,6 +206,10 @@ export default function Home() {
           const event = JSON.parse(line);
           if (event.type === "progress") update({ role: "assistant", content: event.message });
           if (event.type === "error") throw new Error(event.message);
+          if (event.type === "reply") {
+            completed = true;
+            update({ role: "assistant", content: event.message });
+          }
           if (event.type === "result") {
             completed = true;
             update({ role: "assistant", content: "", answer: event.result });
@@ -204,7 +219,7 @@ export default function Home() {
       }
       if (!completed) throw new Error("查核回應中斷，尚未得到完整答案，請重試。");
     } catch (e) {
-      if (!controller.signal.aborted) update({ role: "assistant", content: e instanceof Error ? e.message : "查核未完成，請重試。" });
+      if (!controller.signal.aborted) update({ role: "assistant", content: e instanceof Error ? e.message : "查核未完成，請重試。", excludeFromContext: true });
     } finally {
       if (generationRef.current === generation) setSending(false);
     }
@@ -279,10 +294,14 @@ export default function Home() {
 
   function handleYearChange(year: string) {
     if (year === selectedYear) return;
+    startNewConversation();
+    setSelectedYear(year);
+  }
+
+  function startNewConversation() {
     requestRef.current?.abort();
     generationRef.current++;
     setSending(false);
-    setSelectedYear(year);
     setMessages([]);
     setInput("");
   }
@@ -415,7 +434,7 @@ export default function Home() {
             </div>
 
             <div className="messages">
-              <p className="evidence-note">每次提問會重新查核所選學年全部文件。請列明事項或日期；頁碼指 PDF 實際頁次。答案附原文供核對。</p>
+              <p className="evidence-note">可以直接提問、承接上文追問，或請我簡短整理。會議內容只根據所選學年回答，並附檔名、PDF 頁碼及原文供核對。</p>
               {docsError && <p className="document-warning" role="alert">{docsError}</p>}
               {docIssues.filter((issue) => issue.year === selectedYear || issue.year === UNCATEGORIZED_YEAR).map((issue) => (
                 <p className="document-warning" key={`${issue.year}-${issue.name}`}>未能查閱：{issue.name}（{issue.year}）— {issue.reason}</p>
@@ -456,6 +475,7 @@ export default function Home() {
             </div>
 
             <div className="input-area">
+              <button className="new-chat-button" onClick={startNewConversation} disabled={messages.length === 0}>新對話</button>
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}

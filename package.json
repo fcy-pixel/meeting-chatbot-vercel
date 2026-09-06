@@ -11,7 +11,8 @@
     "deploy": "npm run pages:build && wrangler pages deploy .vercel/output/static",
     "extract": "tsx scripts/extract-pdfs.mts",
     "test": "tsx --test tests/*.test.ts",
-    "test:acceptance": "tsx scripts/evaluate.mts"
+    "test:acceptance": "tsx scripts/evaluate.mts",
+    "test:conversation": "tsx scripts/evaluate-conversation.mts"
   },
   "dependencies": {
     "next": "^15.0.0",

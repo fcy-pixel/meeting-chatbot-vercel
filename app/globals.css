@@ -256,6 +256,8 @@ body {
 
 .input-area button:hover { opacity: 0.85; }
 .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
+.input-area .new-chat-button { background: #edf2f7; color: #4a5568; padding: 10px; white-space: nowrap; }
+.input-area input { min-width: 0; }
 
 /* Buttons */
 .btn {

@@ -35,6 +35,7 @@ export default function AnswerView({ answer }: { answer: Answer }) {
     </details>}
     <details className="scope-details" open={incomplete}>
       <summary>查閱範圍及未完成項目</summary>
+      {answer.resolvedQuestion && <p>本次理解的問題：{answer.resolvedQuestion}</p>}
       <p>頁碼為原 PDF 第一頁起計的實際頁次，可能與頁面印刷頁碼不同。只有全部批次及文件完成，才會說未找到答案。</p>
       {scope.documents.map((d) => <p key={d.name}>{d.name}：PDF 第 1–{d.pages} 頁{incomplete ? "（計劃範圍；未完成部分見下）" : "（已查核）"}</p>)}
       {scope.issues.map((issue) => <p className="document-warning" key={issue.name}>{issue.name}（{issue.year}）：{issue.reason}</p>)}
