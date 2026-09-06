@@ -1,12 +1,15 @@
 import type { DocumentIssue, MeetingDocument } from "./documents";
 import { normalizeSchoolYear } from "./schoolYear";
 import type { AnswerLength } from "./sourceSelection";
+import { searchText, sourceCharacters } from "./textSearch";
 
 export type Source = { id: string; name: string; year: string; pdfPath: string; page: number; start: number; end: number; text: string };
 export type Evidence = { id: string; name: string; year: string; pdfPath: string; page: number; quote: string };
 export type Claim = { text: string; evidenceIds: string[] };
-export type Scope = { year: string; snapshot: string; documents: { name: string; pages: number }[]; totalBatches: number; reviewedBatches: number; failed: { batch: number; sources: string[] }[]; issues: DocumentIssue[]; selection?: { availableDocuments: number; excluded: string[] } };
-export type Answer = { status: "answered" | "not_found" | "insufficient" | "partial"; message: string; claims: Claim[]; evidence: Evidence[]; scope: Scope; resolvedQuestion?: string };
+export type TextSearchScope = { method: "search" | "full"; expanded: boolean; totalCharacters: number; sentCharacters: number; pages: { name: string; page: number; start: number; end: number }[] };
+export type Usage = { inputTokens: number; outputTokens: number; cachedInputTokens: number; calls: number };
+export type Scope = { textSearch?: TextSearchScope; year: string; snapshot: string; documents: { name: string; pages: number }[]; totalBatches: number; reviewedBatches: number; failed: { batch: number; sources: string[] }[]; issues: DocumentIssue[]; selection?: { availableDocuments: number; excluded: string[] } };
+export type Answer = { status: "answered" | "not_found" | "insufficient" | "partial"; message: string; claims: Claim[]; evidence: Evidence[]; scope: Scope; resolvedQuestion?: string; usage?: Usage };
 export type ModelCall = (system: string, data: unknown, stage?: "compose") => Promise<unknown>;
 
 export function requestedOtherYear(question: string, year: string): boolean {
@@ -69,6 +72,7 @@ const ANSWER = `你是學校會議紀錄問答助手。閱讀 sources，直接�
 request 是使用者本輪原句，question 已釐清追問所指的事項。按要求整理成簡短回答、條列或表格；answerLength 為 short、standard、detailed，分別代表簡短、適中、詳細。一般問題先直接回答，不需要審核報告或冗長開場。五項重點每項聚焦一件事。Markdown 表格每列一行，儲存格內以分號分隔內容。
 引用直接使用 sources 的 id，quote 從該來源 text 複製相關短句。檔名和頁碼由程式提供，不自行猜測；text 不要寫來源 id，畫面會顯示引用。日期以內文為準，日/月不要倒轉，不把檔名年份套進活動日期。新舊說法不同就分別列明；保留原文的「暫定／預計」、條件和例外，不自行判定哪個正確或已失效。
 只回答問題所問的事項，避免添加無關安排。若某一項沒有資料，在該項明說「文件未提及」，到此為止；例如面談地點未寫，就不能推測在校內，亦不能說壁報板載有地點（原文只寫面談時間）。例如文件只寫表格「路徑」，代表文件所在位置，不是叫老師把填好的表格儲存或上載到那裏；沒有明寫的提交步驟不要補充。「翌日上班日放學時間」要保留上班日及放學時間，不能簡化成翌日或放學後。
+reading.allTextIncluded 為 false 時，這是從完整文字中找出的相關段落。若不足以回答，回 claims:[]、notFound:true，系統會自動擴大搜尋；不要從有限段落斷言整份文件沒有答案。
 若 batch.total 大於1，這是大型文件庫其中一批；先回答這一批的相關內容，不因另一批未在眼前而拒答。
 輸出 JSON：{"claims":[{"text":"自然回答，可使用 Markdown","sources":[{"sourceId":"提供的來源 id","quote":"相關原文短句"}]}],"notFound":false}。每段可引用多個來源；完全沒有相關資料時 claims 為空陣列，notFound 為 true。`;
 
@@ -95,29 +99,50 @@ export async function answerQuestion(input: { question: string; request?: string
     result.message = "目前沒有可讀取的會議紀錄，請先選擇或上載文件。";
     return result;
   }
-  // Current school-year corpora fit one compact context. Larger libraries are
-  // fully partitioned; every batch answers directly, with no approval pipeline.
-  const batches = makeBatches(docs, 140000, question);
-  scope.totalBatches = batches.length;
-  progress?.(scope);
-  const drafts: (Draft | undefined)[] = new Array(batches.length);
-  for (let offset = 0; offset < batches.length; offset += 2) {
-    await Promise.all(batches.slice(offset, offset + 2).map(async (sources, j) => {
-      const index = offset + j;
-      const data = { question, request: input.request, answerLength: input.answerLength || "standard", format: input.richText ? "markdown" : "text", year, batch: { number: index + 1, total: batches.length }, sources: sources.map(modelSource) };
-      try {
-        const raw = await call(ANSWER, data, "compose");
-        try { drafts[index] = parseDraft(raw); }
-        catch {
-          // Retry malformed JSON structure only, never judge or veto prose.
-          drafts[index] = parseDraft(await call(ANSWER + "\n請按指定 JSON 結構輸出 claims 及 notFound，上一個回應格式不完整。", data, "compose"));
+  const allSources = makeBatches(docs, 140000).flat();
+  const search = searchText(allSources, question);
+  scope.textSearch = { method: search.method, expanded: false, totalCharacters: search.totalChars, sentCharacters: 0, pages: [] };
+  const batches: Source[][] = [];
+  const drafts: (Draft | undefined)[] = [];
+  async function readSources(sources: Source[]) {
+    const start = batches.length;
+    let batch: Source[] = [], chars = 0;
+    for (const source of sources) {
+      const length = sourceCharacters([source]);
+      if (batch.length && chars + length > 140000) { batches.push(batch); batch = []; chars = 0; }
+      batch.push(source); chars += length;
+    }
+    if (batch.length) batches.push(batch);
+    scope.totalBatches = batches.length;
+    scope.textSearch!.sentCharacters += sourceCharacters(sources);
+    scope.textSearch!.pages.push(...sources.map(s => ({ name: s.name, page: s.page, start: s.start, end: s.end })));
+    progress?.(scope);
+    for (let offset = start; offset < batches.length; offset += 2) {
+      await Promise.all(batches.slice(offset, offset + 2).map(async (sources, j) => {
+        const index = offset + j;
+        const data = { question, request: input.request, answerLength: input.answerLength || "standard", format: input.richText ? "markdown" : "text", year,
+          reading: { method: search.method, allTextIncluded: scope.textSearch!.pages.length === allSources.length },
+          batch: { number: index + 1, total: batches.length }, sources: sources.map(modelSource) };
+        try {
+          const raw = await call(ANSWER, data, "compose");
+          try { drafts[index] = parseDraft(raw); }
+          catch {
+            drafts[index] = parseDraft(await call(ANSWER + "\n請按指定 JSON 結構輸出 claims 及 notFound，上一個回應格式不完整。", data, "compose"));
+          }
+          scope.reviewedBatches++;
+        } catch {
+          scope.failed.push({ batch: index + 1, sources: sources.map(s => `${s.name}｜PDF 第 ${s.page} 頁｜字元 ${s.start + 1}–${s.end}`) });
         }
-        scope.reviewedBatches++;
-      } catch {
-        scope.failed.push({ batch: index + 1, sources: sources.map(s => `${s.name}｜PDF 第 ${s.page} 頁｜字元 ${s.start + 1}–${s.end}`) });
-      }
-      progress?.(scope);
-    }));
+        progress?.(scope);
+      }));
+    }
+  }
+  await readSources(search.sources);
+  // If the first search finds no answer, inspect the rest of the saved text.
+  // This expands recall without asking users to reformulate or refusing prose.
+  if (search.remaining.length && !scope.failed.length && drafts.every(d => d?.claims.length === 0)) {
+    scope.textSearch!.expanded = true;
+    await readSources(search.remaining);
   }
   const evidence = new Map<string, Evidence>();
   let unlocated = false;

@@ -19,3 +19,13 @@ test("incomplete model output is rejected instead of parsing a truncated answer"
   t.mock.method(globalThis, "fetch", async () => Response.json({ choices: [{ finish_reason: "length", message: { content: '{"claims":[]}' } }] }));
   await assert.rejects(() => qwenCall("test")("Compose", {}, "compose"), /未完整傳回/);
 });
+
+test("actual provider token usage is reported, including incomplete responses", async t => {
+  const usage: unknown[] = [];
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    usage: { prompt_tokens: 1200, completion_tokens: 70, total_tokens: 1270, prompt_tokens_details: { cached_tokens: 800 } },
+    choices: [{ finish_reason: "length", message: { content: '{"claims":[]}' } }],
+  }));
+  await assert.rejects(() => qwenCall("test", undefined, value => usage.push(value))("Compose", {}, "compose"));
+  assert.deepEqual(usage, [{ inputTokens: 1200, outputTokens: 70, cachedInputTokens: 800, calls: 1 }]);
+});

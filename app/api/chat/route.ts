@@ -32,7 +32,11 @@ export async function POST(req: NextRequest) {
       const heartbeat = setInterval(() => send({ type: "heartbeat" }), 15000);
       try {
         send({ type: "progress", message: conversation.messages.length ? "正在承接上文…" : "正在理解問題…" });
-        const call = qwenCall(apiKey, AbortSignal.any([req.signal, abort.signal]));
+        const usage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, calls: 0 };
+        const call = qwenCall(apiKey, AbortSignal.any([req.signal, abort.signal]), value => {
+          usage.inputTokens += value.inputTokens; usage.outputTokens += value.outputTokens;
+          usage.cachedInputTokens += value.cachedInputTokens; usage.calls += value.calls;
+        });
         // Already-open older tabs only understand result events. Preserve their
         // existing question-only protocol until the page is refreshed.
         const plan = conversationalClient ? await planConversation(question, conversation, call) : { kind: "lookup" as const, question };
@@ -48,9 +52,10 @@ export async function POST(req: NextRequest) {
           if (cancelled) throw new Error("回答已取消。");
           send({ type: "progress", message: scope.totalBatches > 1
             ? `正在閱讀會議紀錄，已完成 ${scope.reviewedBatches}/${scope.totalBatches} 批…`
-            : "正在閱讀會議紀錄並整理答案…" });
+            : scope.textSearch?.method === "search" ? "正在根據相關文字整理答案…" : "正在閱讀已抽取文字並整理答案…" });
         });
         result.resolvedQuestion = plan.question;
+        if (usage.calls) result.usage = usage;
         send({ type: "result", result });
       } catch (e) {
         send({ type: "error", message: e instanceof Error ? e.message : "連線未完成，請重試。" });
