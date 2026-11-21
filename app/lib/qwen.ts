@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import type { ModelCall, Usage } from "./evidence";
 
-const answerModel = "qwen3-max";
+const answerModel = "qwen3.7-max";
 const alternateModel = "qwen-plus";
 
 export function qwenCall(apiKey: string, signal?: AbortSignal, onUsage?: (usage: Usage) => void): ModelCall {
