@@ -175,7 +175,9 @@ export async function answerQuestion(input: { question: string; request?: string
     result.message = [incomplete ? "部分文件暫時未能讀取，以下先回答已讀到的資料。" : "", batches.length > 1 ? `資料分 ${batches.length} 批閱讀，以下合併各批的相關回答。` : "", unlocated ? "部分內容未能定位引用頁碼，可從左側來源查看完整文件。" : ""].filter(Boolean).join("\n");
   } else if (incomplete) {
     result.status = "partial";
-    result.message = "讀取會議紀錄時連線未完成，請稍後再試。";
+    result.message = scope.failed.length
+      ? "問答服務暫時未能整理會議紀錄，請稍後再試。"
+      : "部分會議紀錄未能讀取，請查看來源清單的提示。";
   } else {
     result.status = "not_found";
     result.message = `所選 ${year} 學年會議紀錄沒有找到這項資料。${scope.selection?.excluded.length ? "未勾選的文件不在這次查閱範圍內。" : ""}`;
